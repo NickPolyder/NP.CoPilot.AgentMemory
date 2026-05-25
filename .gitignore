@@ -1,0 +1,59 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checkers
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Runtime data — should NEVER end up in this repo.
+# The plugin's runtime data lives in $HOME\.copilot\np-agent-memory\
+# (DB, backups, logs). If any of these names show up inside the repo,
+# something went wrong.
+agent-memory.db
+agent-memory.db-wal
+agent-memory.db-shm
+*.sqlite
+*.sqlite3
+backups/
+logs/
+
+# Environment / secrets
+.env
+.env.local
+*.secret
+
+# Local scratch
+scratch/
+tmp/
