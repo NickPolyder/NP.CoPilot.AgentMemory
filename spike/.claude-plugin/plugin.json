@@ -1,0 +1,9 @@
+{
+  "name": "np-agent-memory-spike",
+  "description": "Phase 0 spike for the np-agent-memory plugin: one-tool stdio MCP server used to characterise the Copilot CLI plugin runtime environment.",
+  "version": "0.0.1",
+  "author": {
+    "name": "Nick Polyderopoulos"
+  },
+  "keywords": ["spike", "internal", "np-agent-memory"]
+}

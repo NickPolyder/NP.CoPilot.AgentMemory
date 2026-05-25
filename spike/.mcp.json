@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "np-agent-memory-spike": {
+      "type": "local",
+      "command": "${PLUGIN_ROOT}/.venv/Scripts/python.exe",
+      "args": ["-m", "spike_server"],
+      "env": {
+        "PYTHONPATH": "${PLUGIN_ROOT}/server",
+        "SPIKE_PROBE_FROM_MCP_JSON": "hello-from-mcp-config",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
