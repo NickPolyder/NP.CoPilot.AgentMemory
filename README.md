@@ -26,12 +26,13 @@ other agents.
 | Thing                              | Location                                                            |
 |------------------------------------|---------------------------------------------------------------------|
 | Plan / architecture                | `docs/PLAN.md`                                                      |
-| MCP server (Python)                | `server/` *(not yet created — Phase 1+)*                            |
+| MCP server (Python)                | `server/np_agent_memory/` ✅ Phase 1                                |
 | Bundled skill                      | `skills/agent-memory/SKILL.md` *(not yet created — Phase 8)*        |
-| Plugin manifest                    | `.claude-plugin/plugin.json` *(not yet created — Phase 1)*          |
-| MCP registration                   | `.mcp.json` *(not yet created — Phase 1)*                           |
-| Runtime SQLite DB                  | `$HOME\.copilot\np-agent-memory\agent-memory.db` *(plugin-owned)*   |
-| Runtime backups                    | `$HOME\.copilot\np-agent-memory\backups\`                           |
+| Plugin manifest                    | `.claude-plugin/plugin.json` ✅ Phase 1                             |
+| MCP registration                   | `.mcp.json` ✅ Phase 1                                              |
+| Installer (venv + deps)            | `install.ps1` ✅ Phase 1                                            |
+| Runtime SQLite DB                  | `$HOME\.copilot\np-agent-memory\agent-memory.db` *(plugin-owned, Phase 2)*   |
+| Runtime backups                    | `$HOME\.copilot\np-agent-memory\backups\` *(Phase 7)*               |
 | Runtime logs                       | `$HOME\.copilot\np-agent-memory\logs\`                              |
 
 The runtime data folder uses the plugin name (`np-agent-memory`) so its
@@ -41,8 +42,28 @@ provenance is obvious to anyone inspecting `$HOME\.copilot\`.
 
 1. Read [`docs/PLAN.md`](docs/PLAN.md) end-to-end.
 2. Read [`docs/TASKS.md`](docs/TASKS.md) for the phased breakdown.
-3. Phase 0 (the spike) must pass before any real code is written. See
-   the "Implementation phases" section of the plan.
+3. Phase 0 (the spike) is complete — see [`docs/spike-0.md`](docs/spike-0.md)
+   and [`docs/decisions/0001-stdio-vs-long-lived-backend.md`](docs/decisions/0001-stdio-vs-long-lived-backend.md).
+
+## Install (development loop)
+
+Requires PowerShell 7+ and Python 3.10+ on PATH (or the Windows `py` launcher).
+
+```powershell
+# 1. Build the bundled venv and self-verify the server package imports.
+./install.ps1
+
+# 2. Register the marketplace and install the plugin.
+#    (Run inside the Copilot CLI.)
+/plugin marketplace add "C:\path\to\NP.CoPilot.AgentMemory"
+/plugin install np-agent-memory@np-agent-memory-marketplace
+
+# 3. Restart the CLI, then verify the server loaded by calling the tool:
+#    np-agent-memory-memory_alive
+```
+
+Re-running `install.ps1` is idempotent. It will reuse an existing `.venv`,
+re-pin dependencies from `requirements.txt`, and re-verify the import.
 
 ## Conventions
 

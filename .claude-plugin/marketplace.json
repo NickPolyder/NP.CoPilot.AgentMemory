@@ -1,0 +1,16 @@
+{
+  "name": "np-agent-memory-marketplace",
+  "owner": {
+    "name": "Nick Polyderopoulos"
+  },
+  "metadata": {
+    "description": "Local marketplace for the np-agent-memory plugin."
+  },
+  "plugins": [
+    {
+      "name": "np-agent-memory",
+      "source": "./",
+      "description": "Shared, persistent memory + cross-agent inbox + handover transport for every Copilot CLI agent on Nick's machine."
+    }
+  ]
+}

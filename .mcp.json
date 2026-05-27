@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "np-agent-memory": {
+      "type": "local",
+      "command": "${PLUGIN_ROOT}/.venv/Scripts/python.exe",
+      "args": ["-m", "np_agent_memory"],
+      "env": {
+        "PYTHONPATH": "${PLUGIN_ROOT}/server",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
