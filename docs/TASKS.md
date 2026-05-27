@@ -9,10 +9,10 @@ dependency-ordered; several can run in parallel (noted in the plan).
 
 | #  | Status      | Phase                                                              | Depends on |
 |----|-------------|--------------------------------------------------------------------|------------|
-| 0  | pending     | Spike: verify `.mcp.json` stdio plugin packaging with hello-world  | —          |
+| 0  | done ✅      | Spike: verify `.mcp.json` stdio plugin packaging with hello-world  | —          |
 | 1  | pending     | Plugin scaffolding (`.claude-plugin/`, `.mcp.json`, `README`, `install.ps1`) | 0    |
 | 2  | pending     | Data folder + migration runner (`$HOME\.copilot\np-agent-memory\`) | 1          |
-| 3  | pending     | MCP server skeleton (WAL, per-call connections, path canonicalization, `agent_register`, `agent_describe`) | 2 |
+| 3  | pending     | MCP server skeleton (WAL, per-call connections, explicit `agent_cwd` param + canonicalization, MCP `roots` capability probe, `agent_register`, `agent_describe`) | 2 |
 | 4  | pending     | Memory + todos tools (`memory_log`, `memory_query`, `memory_export`, `todo_*`) | 3 |
 | 5  | pending     | Blockers + handovers tools (`blocker_*`, `handover_save`, `handover_latest`, `handover_export`, `handover_claim`, `handover_ack`, `handover_release`) | 3 |
 | 6  | pending     | Inbox tools (`inbox_send`, `inbox_check`, `inbox_ack`)             | 3          |
@@ -36,13 +36,24 @@ dependency-ordered; several can run in parallel (noted in the plan).
 ## Identity model — agents never see IDs
 
 - `agents.id` is an immutable ULID — internal, used as the FK target.
-- The agent author calls `agent_register(name, workstream)` at session start.
-  The server canonicalizes the calling agent's working directory (resolve
-  symlinks, normalize Windows case, normalize separators, prefer git worktree
-  root) and looks it up in `agent_aliases` to return the right ULID.
+- **Agents pass their own working directory.** The server cannot derive it
+  itself (inside a plugin-launched MCP stdio process, `os.getcwd()` is the
+  plugin install dir, not the agent's repo — confirmed in `docs/spike-0.md`
+  §6). Every tool that scopes to the calling agent takes an explicit
+  `agent_cwd: str` parameter.
+- The agent author calls `agent_register(name, workstream, agent_cwd)` at
+  session start. The server canonicalizes the supplied path (absolute →
+  resolve symlinks → normalize Windows case → strip trailing separators →
+  forward-slash for storage) and looks it up in `agent_aliases` to return
+  the right ULID.
+- Choosing the *right* path is the agent's responsibility (the bundled
+  skill teaches `git rev-parse --show-toplevel` for git-backed agents).
 - One agent can have multiple alias paths (e.g., canonical Q-drive path +
   OneDrive symlink path), all resolving to the same ULID.
 - Moves / renames just add another alias row. No FK rewrites.
+- **Phase 3 probe:** if the Copilot CLI advertises MCP `roots` capability,
+  the server can fall back to `mcp.roots()` and accept `agent_cwd` as
+  optional. The wire shape stays the same either way.
 
 ## Crash-safety: the two-phase handover ack
 

@@ -47,10 +47,34 @@ Two-level model — the *agent author's* view and the *database's* view:
   the primary key on `agents`. Every other table's foreign key points at that
   ULID.
 - **How the two are bridged:** an `agent_aliases` table maps canonicalized
-  paths → `agent_id`. On every tool call, the server canonicalizes the agent's
-  path (resolve symlinks/junctions, normalize Windows case, normalize
-  separators, prefer git worktree root) and looks up the alias to get the
-  `agent_id`.
+  paths → `agent_id`. On every tool call the server canonicalizes the
+  agent-supplied path and looks up the alias to get the `agent_id`.
+
+**Critical: the server cannot derive the agent's working directory itself.**
+The spike (`docs/spike-0.md` §6, §8) confirmed that inside a Copilot CLI
+plugin-launched stdio MCP server, `os.getcwd()` resolves to the plugin
+**install directory**, not to the agent's repo root. There is no
+`COPILOT_AGENT_CWD` environment variable either. Therefore:
+
+- Every tool that needs to scope to the calling agent (most notably
+  `agent_register`, `agent_describe`, `memory_log`, `todo_*`, `blocker_*`,
+  `handover_save`, `inbox_check`, and any read/query tool with an implicit
+  agent context) **MUST accept an explicit `agent_cwd: str` parameter**.
+- The agent is responsible for choosing what to pass. The convention the
+  bundled skill teaches is: **pass your repository root** —
+  `git rev-parse --show-toplevel` for git-backed agents, or a stable
+  per-workstream root for non-git ones. One agent ↔ one canonical root.
+- The server canonicalizes the supplied path (see canonicalization rules
+  with the schema below) and looks it up in `agent_aliases`.
+
+**MCP `roots` capability — investigate before Phase 3.** The MCP spec defines
+a `roots` capability that lets a client declare its workspace roots to the
+server once per session. If the Copilot CLI supports it, the server can read
+`mcp.roots()` instead of requiring the agent to pass `agent_cwd` on every
+call. If it doesn't (or only partially), the explicit per-call parameter
+remains the contract. Either way the wire-level shape of every tool stays
+the same — agents that always pass `agent_cwd` keep working — so this
+decision can be made without redesign.
 
 **Why this split:**
 
@@ -58,8 +82,9 @@ Two-level model — the *agent author's* view and the *database's* view:
   work-tree from `Q:\Repos\work-trees\BI` to somewhere new, we just add a new
   alias row pointing at the same ULID. No data migration, no FK rewrites, no
   history fork.
-- The agent never has to remember anything. Its first call each session is an
-  idempotent `agent_register(name, workstream)` — the server either matches
+- The agent never has to remember anything beyond its own root path. Its
+  first call each session is an idempotent
+  `agent_register(name, workstream, agent_cwd)` — the server either matches
   the canonicalized path to an existing alias and returns the same ULID, or
   creates a new agent + alias on the fly.
 - One agent can have multiple alias paths (e.g., the canonical Q-drive path
@@ -144,7 +169,8 @@ NP.CoPilot.AgentMemory\                          # new repo
 
 ```sql
 -- Agents: ULID primary key. The agent author never sees this — it's
--- resolved server-side from the agent's canonicalized working directory
+-- resolved server-side from the canonicalized agent_cwd parameter the
+-- agent supplies on every call (see Agent identity model), looked up
 -- via the agent_aliases table.
 CREATE TABLE agents (
     id          TEXT PRIMARY KEY,             -- ULID
@@ -162,12 +188,20 @@ CREATE TABLE agent_aliases (
     agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL
 );
--- Canonicalization rules (applied at every read & write):
---   1. Resolve symlinks / junctions (so OneDrive symlink → Q:\…)
---   2. Normalize case (Windows is case-insensitive)
---   3. Normalize separators to backslash
---   4. Resolve to absolute path
---   5. Prefer git worktree root over arbitrary subdirectory
+-- Canonicalization rules (applied server-side at every read & write to the
+-- caller-supplied agent_cwd parameter):
+--   1. Resolve to absolute path (rejects relative paths with a clear error).
+--   2. Resolve symlinks / junctions (so OneDrive symlink → Q:\…).
+--   3. Normalize Windows case (lowercased drive letter; path content folded
+--      via os.path.normcase semantics — Windows is case-insensitive).
+--   4. Strip trailing separators.
+--   5. Normalize separators to forward-slash for storage (Windows tolerates
+--      mixed separators at the filesystem layer; using one form for storage
+--      avoids alias duplication and makes DB inspection easier).
+-- Choosing the *right* path is the agent's responsibility, not the server's
+-- (the server has no view of the agent's filesystem context — see the
+-- Agent identity model section). The bundled skill teaches agents to pass
+-- their git worktree root (or equivalent stable per-workstream root).
 
 -- Append-only event stream. Categories are deliberately minimal.
 -- Stateful objects (todos/blockers/handovers) live in their own tables and
@@ -302,12 +336,23 @@ CREATE TABLE backup_runs (
 
 ### MCP tool surface
 
-Every tool implicitly scopes to the **calling agent**, resolved from the
-canonicalized working directory via `agent_aliases`. Cross-agent operations
-require an explicit `agent_id` (or `agent_name` / `agent_path`) parameter.
-Every list/query tool has a required (server-capped) `limit` and supports
-cursor-based pagination. Large bodies (e.g., handover `body_md`) are truncated
-with a `truncated: true` flag unless the caller passes `full=true`.
+Every tool scopes to the **calling agent**, resolved from the
+**caller-supplied `agent_cwd: str` parameter** (canonicalized server-side
+and looked up in `agent_aliases`). The server cannot infer the calling
+agent's working directory from its own process state — see the Agent
+identity model section. Cross-agent operations additionally require an
+explicit `agent_id` (or `agent_name` / `agent_path`) parameter for the
+target agent. Every list/query tool has a required (server-capped) `limit`
+and supports cursor-based pagination. Large bodies (e.g., handover
+`body_md`) are truncated with a `truncated: true` flag unless the caller
+passes `full=true`.
+
+In the table below, `agent_cwd` is implied on every row-marked tool except
+`memory_backup_now` (server-scoped). If MCP `roots` capability turns out to
+be supported by the Copilot CLI (decision deferred to Phase 3), the server
+will accept `agent_cwd` as optional and fall back to `mcp.roots()`; the
+parameter itself stays in the tool signature so callers that always pass it
+keep working.
 
 | Tool                  | Purpose                                                            |
 |-----------------------|--------------------------------------------------------------------|
@@ -356,6 +401,11 @@ with a `truncated: true` flag unless the caller passes `full=true`.
 - **New skill (shipped in plugin):** `skills/agent-memory/SKILL.md` — explains
   the tools, conventions, "what to log vs. what to skip", good inbox-message
   patterns, and how to use `memory_export` when you want a markdown view.
+  **MUST teach the `agent_cwd` contract**: every tool call passes the
+  agent's repo root (`git rev-parse --show-toplevel` for git-backed agents,
+  or a stable per-workstream root otherwise). The skill should include a
+  copy-pasteable session-start snippet so each workstream agent registers
+  itself idempotently on the first turn.
 - **Rewrite:** `~/.copilot/skills/handover-report/SKILL.md` — becomes a thin
   skill that calls `handover_save` (no file writes). Structured-body template
   stays the same so the markdown shape is preserved.
@@ -377,7 +427,13 @@ Phases are roughly dependency-ordered; several can run in parallel.
    on first run, schema.sql, migrations folder, idempotent migrator with
    `BEGIN IMMEDIATE` + retry. Tests for two concurrent starts.
 3. **MCP server skeleton** — WAL pragmas, per-call connections, busy retries,
-   path canonicalization, `agent_register` + `agent_describe` end-to-end.
+   path canonicalization, `agent_register(agent_cwd=…)` + `agent_describe`
+   end-to-end. **Before implementing**: spend ~30 minutes probing whether
+   the Copilot CLI advertises the MCP `roots` capability (server logs
+   `client.list_roots()` request, or inspect the initialize handshake). If
+   supported, accept `agent_cwd` as optional with a `roots`-based fallback;
+   if not, keep it required. Either way the wire shape doesn't change for
+   callers that pass `agent_cwd` explicitly.
 4. **Memory + todos tools** — `memory_log`, `memory_query`, `memory_export`,
    `todo_*`. Dogfood from the next session.
 5. **Blockers + handovers tools** — `blocker_*`, `handover_save`,
