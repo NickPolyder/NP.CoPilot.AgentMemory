@@ -57,3 +57,6 @@ logs/
 # Local scratch
 scratch/
 tmp/
+
+# Copilot CLI local state (review reports, etc.)
+.copilot/

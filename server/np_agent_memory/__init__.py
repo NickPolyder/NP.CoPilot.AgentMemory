@@ -1,8 +1,8 @@
 """np-agent-memory MCP server package.
 
-Phase 1 scaffolding: an MCP server that loads cleanly and exposes a single
-diagnostic tool (`memory_alive`). Tools land in Phases 3+ once the data
-folder, migrations, and agent identity model are in place.
+Phase 2: data folder provisioning + migration runner. The server creates
+its runtime directory at $HOME/.copilot/np-agent-memory/ (or AGENT_MEMORY_DIR),
+applies versioned SQL migrations on startup, and serves tools via MCP stdio.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
