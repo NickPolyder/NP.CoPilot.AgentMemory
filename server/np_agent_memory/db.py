@@ -13,10 +13,12 @@ Phase 2 scope:
 from __future__ import annotations
 
 import os
+import random
 import sqlite3
 import sys
-from collections.abc import Generator
-from contextlib import contextmanager
+import time
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -168,6 +170,89 @@ def open_connection(
         yield conn
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Transaction helpers (tool calls)
+# ---------------------------------------------------------------------------
+
+# Retry budget for tool-level BEGIN IMMEDIATE write contention. busy_timeout
+# already governs ordinary lock waits, but multiple CLI windows can serialize
+# many concurrent writers; this is belt-and-suspenders on top of busy_timeout.
+# Only SQLITE_BUSY / SQLITE_LOCKED are retried — every other OperationalError
+# (e.g. constraint failure, malformed SQL) propagates immediately.
+_TXN_MAX_RETRIES = 6
+_TXN_BASE_DELAY_S = 0.05  # doubles each retry, with jitter
+
+# SQLite extended/primary result codes that indicate transient lock contention.
+_RETRYABLE_SQLITE_CODES = frozenset({5, 6, 261, 262, 517})  # BUSY, LOCKED, *_SNAPSHOT
+
+
+def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
+    """True if the error is transient lock contention worth retrying."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code in _RETRYABLE_SQLITE_CODES:
+        return True
+    # Fallback for builds that do not surface sqlite_errorcode reliably.
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database table is locked" in msg
+
+
+def _run_in_txn[T](
+    conn: sqlite3.Connection,
+    work: Callable[[sqlite3.Connection], T],
+    begin: str,
+) -> T:
+    """Run ``work(conn)`` inside a retried ``begin`` transaction.
+
+    The whole unit of work is retried on transient lock contention so the body
+    re-reads current state after losing a race (e.g. another process inserted
+    the alias first). On a non-retryable error the transaction is rolled back
+    and the error propagates.
+    """
+    last_exc: sqlite3.OperationalError | None = None
+    for attempt in range(_TXN_MAX_RETRIES):
+        try:
+            conn.execute(begin)
+            try:
+                result = work(conn)
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+            return result
+        except sqlite3.OperationalError as exc:
+            # A failed BEGIN/COMMIT may leave no open txn; roll back defensively.
+            if conn.in_transaction:
+                with suppress(sqlite3.OperationalError):
+                    conn.execute("ROLLBACK")
+            if not _is_retryable_lock_error(exc) or attempt == _TXN_MAX_RETRIES - 1:
+                raise
+            last_exc = exc
+            delay = _TXN_BASE_DELAY_S * (2**attempt)
+            time.sleep(delay + random.uniform(0, delay))
+    # Unreachable: the loop either returns or raises, but satisfy type-checkers.
+    raise last_exc if last_exc else RuntimeError("transaction retry loop exhausted")
+
+
+def run_in_write_txn[T](
+    conn: sqlite3.Connection,
+    work: Callable[[sqlite3.Connection], T],
+) -> T:
+    """Run ``work(conn)`` inside a retried ``BEGIN IMMEDIATE`` write transaction."""
+    return _run_in_txn(conn, work, "BEGIN IMMEDIATE")
+
+
+def run_in_read_txn[T](
+    conn: sqlite3.Connection,
+    work: Callable[[sqlite3.Connection], T],
+) -> T:
+    """Run ``work(conn)`` inside a retried ``BEGIN DEFERRED`` read transaction.
+
+    Gives multi-statement reads a single consistent WAL snapshot so derived
+    values (e.g. several COUNT(*) queries) cannot straddle a concurrent commit.
+    """
+    return _run_in_txn(conn, work, "BEGIN DEFERRED")
 
 
 # ---------------------------------------------------------------------------

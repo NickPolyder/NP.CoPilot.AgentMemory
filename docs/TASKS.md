@@ -12,7 +12,7 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 0  | done ✅      | Spike: verify `.mcp.json` stdio plugin packaging with hello-world  | —          |
 | 1  | done ✅      | Plugin scaffolding (`.claude-plugin/`, `.mcp.json`, `README`, `install.ps1`) | 0    |
 | 2  | done ✅      | Data folder + migration runner (`$HOME\.copilot\np-agent-memory\`) | 1          |
-| 3  | pending     | MCP server skeleton (WAL, per-call connections, explicit `agent_cwd` param + canonicalization, MCP `roots` capability probe, `agent_register`, `agent_describe`) | 2 |
+| 3  | done ✅      | MCP server skeleton (WAL, per-call connections, explicit `agent_cwd` param + canonicalization, MCP `roots` capability probe, `agent_register`, `agent_describe`) | 2 |
 | 4  | pending     | Memory + todos tools (`memory_log`, `memory_query`, `memory_export`, `todo_*`) | 3 |
 | 5  | pending     | Blockers + handovers tools (`blocker_*`, `handover_save`, `handover_latest`, `handover_export`, `handover_claim`, `handover_ack`, `handover_release`) | 3 |
 | 6  | pending     | Inbox tools (`inbox_send`, `inbox_check`, `inbox_ack`)             | 3          |
@@ -51,9 +51,11 @@ dependency-ordered; several can run in parallel (noted in the plan).
 - One agent can have multiple alias paths (e.g., canonical Q-drive path +
   OneDrive symlink path), all resolving to the same ULID.
 - Moves / renames just add another alias row. No FK rewrites.
-- **Phase 3 probe:** if the Copilot CLI advertises MCP `roots` capability,
-  the server can fall back to `mcp.roots()` and accept `agent_cwd` as
-  optional. The wire shape stays the same either way.
+- **Phase 3 probe (done — see `docs/spike-roots.md`):** the Copilot CLI
+  (`github-copilot-developer` 1.0.57-3, protocol 2025-11-25) does **not**
+  advertise MCP `roots`, and `list_roots()` returns `Method not found`.
+  Decision: `agent_cwd` stays **required** on every agent-scoped tool; no
+  `roots` fallback was built. Re-probe is cheap if a future CLI adds `roots`.
 
 ## Crash-safety: the two-phase handover ack
 

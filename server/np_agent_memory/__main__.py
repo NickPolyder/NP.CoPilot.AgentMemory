@@ -44,6 +44,7 @@ from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory import __version__ as PACKAGE_VERSION
 from np_agent_memory.db import init_db
+from np_agent_memory.tools import register_all_tools
 
 try:
     from importlib.metadata import version as _pkg_version
@@ -64,8 +65,9 @@ mcp = FastMCP(
     name="np-agent-memory",
     instructions=(
         "Shared persistent memory + cross-agent inbox + handover transport "
-        "for every Copilot CLI agent. Phase 2: DB initialized with full "
-        "schema; agent-scoped tools land in Phase 3."
+        "for every Copilot CLI agent. Agent-scoped tools take an explicit "
+        "`agent_cwd` (your repository root); the server resolves it to your "
+        "agent identity. Call `agent_register` once at session start."
     ),
 )
 
@@ -91,8 +93,12 @@ def memory_alive() -> dict[str, Any]:
         "started_at_iso": _STARTED_AT_ISO,
         "uptime_seconds": round(time.time() - _STARTED_AT, 3),
         "db_path": str(_DB_PATH) if _DB_PATH else None,
-        "phase": "2 - data folder + migrations (agent tools in Phase 3)",
+        "phase": "3 - agent identity (register/describe/add_alias)",
     }
+
+
+# Register the agent-scoped tool surface (agent_register/describe/add_alias).
+register_all_tools(mcp)
 
 
 def main() -> None:
