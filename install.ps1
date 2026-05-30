@@ -46,7 +46,7 @@ if (Get-Command py -ErrorAction SilentlyContinue) {
     $pythonBootstrap = @('python')
     Write-Host "🐍 Bootstrap Python: python (from PATH)"
 } else {
-    throw "No Python interpreter found. Install Python 3.10+ and re-run."
+    throw "No Python interpreter found. Install Python 3.12+ and re-run."
 }
 
 $venvPython = Join-Path $venvDir 'Scripts\python.exe'
@@ -57,13 +57,27 @@ if (Test-Path -LiteralPath $venvPython) {
     Write-Host "✅ Venv already exists — reusing."
 } else {
     Write-Host "🛠  Creating venv..."
-    & $pythonBootstrap[0] @($pythonBootstrap[1..($pythonBootstrap.Length - 1)] + @('-m', 'venv', $venvDir))
+    $bootstrapExe  = $pythonBootstrap[0]
+    $bootstrapArgs = @($pythonBootstrap | Select-Object -Skip 1)
+    & $bootstrapExe @($bootstrapArgs + @('-m', 'venv', $venvDir))
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed (exit $LASTEXITCODE)" }
 }
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     throw "Expected venv Python at '$venvPython' but it does not exist."
 }
+
+# --- 2b. Enforce Python 3.12+ ----------------------------------------------
+# The migration runner depends on sqlite3.connect(autocommit=True) and
+# datetime.UTC, both new in Python 3.12. A 3.10/3.11 venv installs cleanly but
+# crashes at first DB init, so fail fast and loud here instead.
+
+Write-Host "🔎 Verifying Python version (>= 3.12)..."
+$versionOutput = & $venvPython -c "import sys; print('%d.%d' % sys.version_info[:2]); sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    throw "Python 3.12+ is required, but the venv interpreter is $versionOutput. Install Python 3.12+ and re-create the venv."
+}
+Write-Host "✅ Python $versionOutput OK."
 
 # --- 3. Install dependencies -----------------------------------------------
 

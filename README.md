@@ -47,7 +47,9 @@ provenance is obvious to anyone inspecting `$HOME\.copilot\`.
 
 ## Install (development loop)
 
-Requires PowerShell 7+ and Python 3.10+ on PATH (or the Windows `py` launcher).
+Requires PowerShell 7+ and Python 3.12+ on PATH (or the Windows `py` launcher).
+The migration runner depends on `sqlite3.connect(autocommit=True)` and
+`datetime.UTC`, both of which require Python 3.12 or newer.
 
 ```powershell
 # 1. Build the bundled venv and self-verify the server package imports.
@@ -64,6 +66,31 @@ Requires PowerShell 7+ and Python 3.10+ on PATH (or the Windows `py` launcher).
 
 Re-running `install.ps1` is idempotent. It will reuse an existing `.venv`,
 re-pin dependencies from `requirements.txt`, and re-verify the import.
+
+> **Pre-release note:** the bundled `0001_init.sql` is still being revised. The
+> runner refuses to start if a previously-applied migration's checksum changed
+> (it guards against edits to shipped SQL). Until v1 ships, if you hit a
+> "checksum mismatch" error after pulling, delete your dev database at
+> `$HOME\.copilot\np-agent-memory\` (or wherever `AGENT_MEMORY_DIR` points) and
+> let it re-initialize.
+
+## Development tooling
+
+Dev dependencies (test runner + linter) are pinned in `requirements-dev.txt`:
+
+```powershell
+# Install dev tooling into the bundled venv.
+./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+
+# Lint and format (Ruff — config in pyproject.toml).
+./.venv/Scripts/ruff.exe check server          # lint
+./.venv/Scripts/ruff.exe check --fix server    # lint + autofix
+./.venv/Scripts/ruff.exe format server         # format (Black-compatible)
+
+# Run the test suite.
+$env:PYTHONPATH = "$(Get-Location)\server"
+./.venv/Scripts/python.exe -m pytest server/tests/ -q
+```
 
 ## Conventions
 

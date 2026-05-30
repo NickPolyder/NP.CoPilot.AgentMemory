@@ -76,12 +76,36 @@ def get_db_path(data_dir: Path | None = None) -> Path:
 # Connection factory
 # ---------------------------------------------------------------------------
 
+
+class WalConversionError(RuntimeError):
+    """Raised when ``PRAGMA journal_mode=WAL`` did not take effect.
+
+    The delete->WAL conversion can fail transiently when another process holds
+    a lock during checkpoint (it may return ``'delete'`` instead of raising
+    SQLITE_BUSY). This is treated as retryable cold-start contention by the
+    migration runner's busy-retry loop; on a single non-retrying connection it
+    propagates as a fatal RuntimeError (its base class).
+    """
+
+
 # Persistent pragmas (survive connection close) vs per-connection pragmas.
 # journal_mode=WAL is persistent once set; the others are per-connection.
+# synchronous=NORMAL with WAL: writes sync only on checkpoint, not every
+# commit. A power failure / OS crash (not process crash) can lose the most
+# recent committed transactions. Acceptable trade-off for agent-memory data.
+#
+# busy_timeout is set before journal_mode=WAL so it governs ordinary lock
+# waits (BEGIN IMMEDIATE, statement execution) from the very first connection.
+# NOTE: busy_timeout does NOT help the delete->WAL conversion itself — that
+# mode change raises SQLITE_BUSY immediately under a concurrent lock and does
+# not invoke the busy handler. Cold-start WAL-conversion contention is
+# tolerated by the retry/backoff loop in migrations/__init__.py, NOT by this
+# pragma. Do not remove that retry loop on the assumption busy_timeout covers
+# it — it does not.
 _PRAGMAS = [
+    "PRAGMA busy_timeout = 5000;",
     "PRAGMA journal_mode = WAL;",
     "PRAGMA foreign_keys = ON;",
-    "PRAGMA busy_timeout = 5000;",
     "PRAGMA synchronous = NORMAL;",
 ]
 
@@ -90,10 +114,24 @@ def _configure_connection(conn: sqlite3.Connection) -> None:
     """Apply runtime pragmas to a fresh connection.
 
     Shared by both the connection factory and the migration runner to avoid
-    pragma drift.
+    pragma drift. Verifies WAL mode was actually set (it can silently fail
+    if another process holds an exclusive lock during checkpoint).
     """
     for pragma in _PRAGMAS:
-        conn.execute(pragma)
+        result = conn.execute(pragma)
+        # Verify WAL mode — it returns the journal mode as a result row.
+        # If it did not take effect (returns e.g. 'delete'), raise a retryable
+        # WalConversionError so the migration runner's busy loop retries the
+        # cold-start contention rather than degrading multi-process safety.
+        if "journal_mode" in pragma:
+            row = result.fetchone()
+            # A missing row is anomalous — the pragma always returns the mode.
+            if row is None or row[0].lower() != "wal":
+                got = row[0] if row else None
+                raise WalConversionError(
+                    f"Failed to set WAL journal mode, got: {got!r}. "
+                    f"Another process may hold an exclusive lock on the database."
+                )
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
@@ -110,12 +148,20 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
         isolation_level=None,  # autocommit by default; explicit txn control
     )
     conn.row_factory = sqlite3.Row
-    _configure_connection(conn)
+    # Close the connection if configuration fails (e.g. WAL verification),
+    # otherwise the descriptor leaks on every failed per-call connection.
+    try:
+        _configure_connection(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
 @contextmanager
-def open_connection(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, None]:
+def open_connection(
+    db_path: Path | None = None,
+) -> Generator[sqlite3.Connection, None, None]:
     """Context manager that yields a configured connection and closes it on exit."""
     conn = connect(db_path)
     try:

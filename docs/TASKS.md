@@ -11,7 +11,7 @@ dependency-ordered; several can run in parallel (noted in the plan).
 |----|-------------|--------------------------------------------------------------------|------------|
 | 0  | done ✅      | Spike: verify `.mcp.json` stdio plugin packaging with hello-world  | —          |
 | 1  | done ✅      | Plugin scaffolding (`.claude-plugin/`, `.mcp.json`, `README`, `install.ps1`) | 0    |
-| 2  | pending     | Data folder + migration runner (`$HOME\.copilot\np-agent-memory\`) | 1          |
+| 2  | done ✅      | Data folder + migration runner (`$HOME\.copilot\np-agent-memory\`) | 1          |
 | 3  | pending     | MCP server skeleton (WAL, per-call connections, explicit `agent_cwd` param + canonicalization, MCP `roots` capability probe, `agent_register`, `agent_describe`) | 2 |
 | 4  | pending     | Memory + todos tools (`memory_log`, `memory_query`, `memory_export`, `todo_*`) | 3 |
 | 5  | pending     | Blockers + handovers tools (`blocker_*`, `handover_save`, `handover_latest`, `handover_export`, `handover_claim`, `handover_ack`, `handover_release`) | 3 |
