@@ -492,3 +492,14 @@ class TestToolRegistration:
         tools = anyio.run(probe.list_tools)
         names = {t.name for t in tools}
         assert {"agent_register", "agent_describe", "agent_add_alias"} <= names
+        assert {"memory_log", "memory_query", "memory_export"} <= names
+        assert {"todo_add", "todo_list", "todo_update"} <= names
+        assert {"blocker_open", "blocker_list", "blocker_resolve"} <= names
+        assert {
+            "handover_save",
+            "handover_latest",
+            "handover_export",
+            "handover_claim",
+            "handover_ack",
+            "handover_release",
+        } <= names
