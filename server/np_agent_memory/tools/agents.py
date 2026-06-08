@@ -24,6 +24,7 @@ from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
+from np_agent_memory.tools._common import resolve_agent_id
 
 # Todo statuses that count as "still open" for the describe summary.
 _OPEN_TODO_STATUSES = ("pending", "in_progress", "blocked")
@@ -76,14 +77,11 @@ def register_agent(
     canonical = canonicalize_agent_cwd(agent_cwd)
 
     def _work(c: sqlite3.Connection) -> tuple[str, sqlite3.Row]:
-        existing = c.execute(
-            "SELECT agent_id FROM agent_aliases WHERE alias_path = ?",
-            (canonical,),
-        ).fetchone()
+        existing_agent_id = resolve_agent_id(c, canonical)
         ts = now_iso()
 
-        if existing is not None:
-            agent_id = existing["agent_id"]
+        if existing_agent_id is not None:
+            agent_id = existing_agent_id
             sets = ["name = ?", "updated_at = ?"]
             params: list[Any] = [name, ts]
             if workstream is not None:
@@ -147,13 +145,9 @@ def describe_agent(conn: sqlite3.Connection, *, agent_cwd: str) -> dict[str, Any
     canonical = canonicalize_agent_cwd(agent_cwd)
 
     def _work(c: sqlite3.Connection) -> dict[str, Any] | None:
-        row = c.execute(
-            "SELECT agent_id FROM agent_aliases WHERE alias_path = ?",
-            (canonical,),
-        ).fetchone()
-        if row is None:
+        agent_id = resolve_agent_id(c, canonical)
+        if agent_id is None:
             return None
-        agent_id = row["agent_id"]
 
         agent = c.execute(
             "SELECT name, workstream, description, created_at, updated_at "
@@ -222,23 +216,16 @@ def add_alias(
     canonical_new = canonicalize_agent_cwd(new_cwd)
 
     def _work(c: sqlite3.Connection) -> bool:
-        src = c.execute(
-            "SELECT agent_id FROM agent_aliases WHERE alias_path = ?",
-            (canonical_src,),
-        ).fetchone()
-        if src is None:
+        agent_id = resolve_agent_id(c, canonical_src)
+        if agent_id is None:
             raise ValueError(
                 f"agent_cwd is not registered: {canonical_src!r}. "
                 f"Call agent_register first."
             )
-        agent_id = src["agent_id"]
 
-        existing = c.execute(
-            "SELECT agent_id FROM agent_aliases WHERE alias_path = ?",
-            (canonical_new,),
-        ).fetchone()
-        if existing is not None:
-            if existing["agent_id"] == agent_id:
+        existing_agent_id = resolve_agent_id(c, canonical_new)
+        if existing_agent_id is not None:
+            if existing_agent_id == agent_id:
                 return False  # already an alias of this agent — no-op
             raise ValueError(
                 f"new_cwd {canonical_new!r} already maps to a different agent; "

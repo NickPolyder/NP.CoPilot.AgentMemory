@@ -13,7 +13,7 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 1  | done ✅      | Plugin scaffolding (`.claude-plugin/`, `.mcp.json`, `README`, `install.ps1`) | 0    |
 | 2  | done ✅      | Data folder + migration runner (`$HOME\.copilot\np-agent-memory\`) | 1          |
 | 3  | done ✅      | MCP server skeleton (WAL, per-call connections, explicit `agent_cwd` param + canonicalization, MCP `roots` capability probe, `agent_register`, `agent_describe`) | 2 |
-| 4  | pending     | Memory + todos tools (`memory_log`, `memory_query`, `memory_export`, `todo_*`) | 3 |
+| 4  | done ✅      | Memory + todos tools (`memory_log`, `memory_query`, `memory_export`, `todo_*`) | 3 |
 | 5  | pending     | Blockers + handovers tools (`blocker_*`, `handover_save`, `handover_latest`, `handover_export`, `handover_claim`, `handover_ack`, `handover_release`) | 3 |
 | 6  | pending     | Inbox tools (`inbox_send`, `inbox_check`, `inbox_ack`)             | 3          |
 | 7  | pending     | Backup machinery (SQLite online backup API, throttled, lazy)       | 3          |
