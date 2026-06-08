@@ -41,6 +41,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory import __version__ as PACKAGE_VERSION
+from np_agent_memory.backup import start_lazy_daily_backup
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools import register_all_tools
 
@@ -91,7 +92,7 @@ def memory_alive() -> dict[str, Any]:
         "started_at_iso": _STARTED_AT_ISO,
         "uptime_seconds": round(time.time() - _STARTED_AT, 3),
         "db_path": str(_DB_PATH) if _DB_PATH else None,
-        "phase": "3 - agent identity (register/describe/add_alias)",
+        "phase": "7 - memory/todos/blockers/handovers/inbox + lazy backup",
     }
 
 
@@ -158,6 +159,10 @@ def main() -> None:
             flush=True,
         )
         sys.exit(1)
+
+    # Kick off the throttled daily backup off the critical path (best-effort,
+    # never blocks startup or crashes the server). At most one snapshot/day.
+    start_lazy_daily_backup()
 
     mcp.run()
 

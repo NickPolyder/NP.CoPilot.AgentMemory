@@ -16,7 +16,7 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 4  | done ✅      | Memory + todos tools (`memory_log`, `memory_query`, `memory_export`, `todo_*`) | 3 |
 | 5  | done ✅      | Blockers + handovers tools (`blocker_*`, `handover_save`, `handover_latest`, `handover_export`, `handover_claim`, `handover_ack`, `handover_release`) | 3 |
 | 6  | done ✅      | Inbox tools (`inbox_send`, `inbox_check`, `inbox_ack`)             | 3          |
-| 7  | pending     | Backup machinery (SQLite online backup API, throttled, lazy)       | 3          |
+| 7  | done ✅      | Backup machinery (SQLite online backup API, throttled, lazy)       | 3          |
 | 8  | pending     | Bundled skill `skills/agent-memory/SKILL.md`                       | 4, 5, 6    |
 | 9  | pending     | Rewrite Connects `ingest-handovers` skill (claim/ack model + `source_*` columns + uniqueness) | 5 |
 | 10 | pending     | Rewrite global `handover-report` skill (dual-write transition, then `handover_save` only) | 5 |

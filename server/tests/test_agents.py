@@ -504,3 +504,4 @@ class TestToolRegistration:
             "handover_release",
         } <= names
         assert {"inbox_send", "inbox_check", "inbox_ack"} <= names
+        assert "memory_backup_now" in names
