@@ -865,7 +865,7 @@ class TestMigrationErrorPaths:
         import np_agent_memory.db as db
 
         db_path = tmp_path / "test.db"
-        real_configure = db._configure_connection
+        real_configure = db.configure_connection
         calls = {"n": 0}
 
         def flaky_configure(conn: sqlite3.Connection) -> None:
@@ -876,7 +876,7 @@ class TestMigrationErrorPaths:
 
         sleep_calls: list[float] = []
         with (
-            patch.object(db, "_configure_connection", flaky_configure),
+            patch.object(db, "configure_connection", flaky_configure),
             patch(
                 "np_agent_memory.migrations.time.sleep",
                 lambda d: sleep_calls.append(d),
@@ -910,7 +910,7 @@ class TestMigrationErrorPaths:
         seed.execute(_MIGRATIONS_TABLE_DDL)
         seed.close()
 
-        real_configure = db._configure_connection
+        real_configure = db.configure_connection
         calls = {"n": 0}
 
         def flaky_configure(conn: sqlite3.Connection) -> None:
@@ -922,7 +922,7 @@ class TestMigrationErrorPaths:
         sleep_calls: list[float] = []
         sql = "create table t (x integer);"
         with (
-            patch.object(db, "_configure_connection", flaky_configure),
+            patch.object(db, "configure_connection", flaky_configure),
             patch(
                 "np_agent_memory.migrations.time.sleep",
                 lambda d: sleep_calls.append(d),

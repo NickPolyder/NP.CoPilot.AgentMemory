@@ -103,7 +103,7 @@ create table if not exists inbox (
     check (metadata_json is null or json_valid(metadata_json))
 );
 
-create index if not exists idx_inbox_to_unread      on inbox(to_agent_id, acked_at, sent_at desc);
+create index if not exists idx_inbox_to_unacked    on inbox(to_agent_id, acked_at, sent_at desc);
 create index if not exists idx_inbox_to_unread_prio on inbox(to_agent_id, read_at, priority, sent_at desc);
 create index if not exists idx_inbox_from_agent     on inbox(from_agent_id);
 

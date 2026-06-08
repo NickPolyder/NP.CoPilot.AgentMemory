@@ -166,11 +166,11 @@ def _open_migration_connection(db_path: Path) -> sqlite3.Connection:
     Closes the connection if configuration fails so a failed open never
     leaks a descriptor.
     """
-    from np_agent_memory.db import _configure_connection
+    from np_agent_memory.db import configure_connection
 
     conn = sqlite3.connect(str(db_path), autocommit=True)
     try:
-        _configure_connection(conn)
+        configure_connection(conn)
         # Override busy_timeout: migrations rely on explicit retry/backoff,
         # so a shorter timeout avoids 5s × retries worst-case stall.
         conn.execute("PRAGMA busy_timeout = 1000;")

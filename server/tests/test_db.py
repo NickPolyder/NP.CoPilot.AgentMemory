@@ -9,12 +9,11 @@ import pytest
 from np_agent_memory.db import (
     _DB_FILENAME,
     WalConversionError,
-    _configure_connection,
+    configure_connection,
     connect,
     ensure_data_dir,
     get_data_dir,
     get_db_path,
-    init_db,
     open_connection,
 )
 
@@ -101,12 +100,12 @@ class TestConnect:
 
 
 class TestConfigureConnection:
-    """Tests for _configure_connection shared helper."""
+    """Tests for configure_connection shared helper."""
 
     def test_applies_all_pragmas(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path), isolation_level=None)
-        _configure_connection(conn)
+        configure_connection(conn)
 
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -138,7 +137,7 @@ class TestConfigureConnection:
         # silently disable the migration WAL-conversion retry path.
         assert issubclass(WalConversionError, RuntimeError)
         with pytest.raises(WalConversionError, match="WAL journal mode"):
-            _configure_connection(_FakeConn())
+            configure_connection(_FakeConn())
 
     def test_raises_when_wal_pragma_returns_no_row(self) -> None:
         """A missing journal_mode result row is treated as a (retryable) failure."""
@@ -152,7 +151,7 @@ class TestConfigureConnection:
                 return _Cursor()
 
         with pytest.raises(WalConversionError, match="WAL journal mode"):
-            _configure_connection(_FakeConn())
+            configure_connection(_FakeConn())
 
 
 class TestConnectFailureSafety:
@@ -177,66 +176,13 @@ class TestConnectFailureSafety:
 
         monkeypatch.setattr("np_agent_memory.db.sqlite3.connect", tracking_connect)
         monkeypatch.setattr(
-            "np_agent_memory.db._configure_connection",
+            "np_agent_memory.db.configure_connection",
             lambda conn: (_ for _ in ()).throw(RuntimeError("config boom")),
         )
 
         with pytest.raises(RuntimeError, match="config boom"):
             connect(db_path)
         assert closed["value"], "connection was not closed after config failure"
-
-
-class TestInitDb:
-    """Tests for the full init_db() flow."""
-
-    def test_creates_db_and_applies_migrations(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("AGENT_MEMORY_DIR", str(tmp_path))
-        db_path = init_db(tmp_path)
-
-        assert db_path.exists()
-        assert (tmp_path / "backups").is_dir()
-        assert (tmp_path / "logs").is_dir()
-
-        # Verify schema was applied
-        with open_connection(db_path) as conn:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-            expected = {
-                "agents",
-                "agent_aliases",
-                "notes",
-                "todos",
-                "blockers",
-                "inbox",
-                "handovers",
-                "backup_runs",
-                "migrations",
-            }
-            assert expected.issubset(tables)
-
-    def test_idempotent_reruns(self, tmp_path: Path) -> None:
-        db_path = init_db(tmp_path)
-        db_path_2 = init_db(tmp_path)
-        assert db_path == db_path_2
-
-        with open_connection(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM migrations").fetchone()[0]
-            assert count == 1
-            # Schema still intact after second run
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-            assert "agents" in tables
-            assert "handovers" in tables
 
 
 class TestOpenConnectionSafety:

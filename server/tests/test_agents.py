@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from np_agent_memory.db import init_db, open_connection
+from np_agent_memory.db import open_connection
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
+from np_agent_memory.startup import init_db
 from np_agent_memory.tools import register_all_tools
 from np_agent_memory.tools.agents import add_alias, describe_agent, register_agent
 
@@ -77,6 +80,35 @@ class TestCanonicalize:
         assert canon.endswith("/")
         assert canon.endswith(":/")
 
+    def test_rejects_overly_long_path(self) -> None:
+        # Absolute-looking but pathologically long input is rejected up front.
+        too_long = "C:\\" + ("a" * 5000)
+        with pytest.raises(ValueError, match="too long"):
+            canonicalize_agent_cwd(too_long)
+
+    def test_symlink_resolves_to_target(self, tmp_path: Path) -> None:
+        # The identity invariant: a symlink and its target collapse to one
+        # canonical path (so they resolve to the same agent).
+        target = tmp_path / "real"
+        target.mkdir()
+        link = tmp_path / "link"
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted: {exc}")
+        assert canonicalize_agent_cwd(str(link)) == canonicalize_agent_cwd(str(target))
+
+    def test_lookup_mode_allows_missing_path(self, tmp_path: Path) -> None:
+        # require_exists=False canonicalizes a stored alias key even if the
+        # path no longer exists (move/rename recovery), and matches the strict
+        # canonical form produced while the path still existed.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        strict = canonicalize_agent_cwd(str(repo))
+        repo.rmdir()
+        lenient = canonicalize_agent_cwd(str(repo), require_exists=False)
+        assert lenient == strict
+
 
 class TestUlidAndTimestamp:
     def test_new_ulid_unique_and_sized(self) -> None:
@@ -143,6 +175,90 @@ class TestRegisterAgent:
         register_agent(db_conn, name="a", agent_cwd=str(tmp_path) + "\\")
         count = db_conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
         assert count == 1
+
+    def test_blank_name_rejected(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        # name is rewritten on every register, so a blank name would clobber a
+        # good label — reject it at the boundary.
+        with pytest.raises(ValueError, match="non-empty"):
+            register_agent(db_conn, name="   ", agent_cwd=str(tmp_path))
+
+    def test_overly_long_name_rejected(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="name is too long"):
+            register_agent(db_conn, name="x" * 200, agent_cwd=str(tmp_path))
+
+    def test_overly_long_description_rejected(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="description is too long"):
+            register_agent(
+                db_conn, name="a", agent_cwd=str(tmp_path), description="x" * 5000
+            )
+
+    def test_reregister_preserves_created_at(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        first = register_agent(db_conn, name="a", agent_cwd=str(tmp_path))
+        created = first["created_at"]
+        second = register_agent(db_conn, name="b", agent_cwd=str(tmp_path))
+        assert second["registered"] == "existing"
+        assert second["created_at"] == created
+
+    def test_concurrent_first_registration_converges_to_one_agent(
+        self, tmp_path: Path
+    ) -> None:
+        # The multi-process invariant: a registration that loses the
+        # BEGIN IMMEDIATE race retries, re-reads the alias the winner inserted,
+        # and converges to ONE agent instead of minting a second ULID or hitting
+        # an unretried alias-PK violation. Simulated single-process: a peer holds
+        # the write lock with the agent+alias staged; the loser's retry/backoff
+        # sleep commits the peer, then the loser's retry succeeds and converges.
+        data_dir = tmp_path / "data"
+        db_path = init_db(data_dir)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        canonical = canonicalize_agent_cwd(str(repo))
+
+        with open_connection(db_path) as peer, open_connection(db_path) as main:
+            ts = now_iso()
+            agent_id = new_ulid()
+            peer.execute("BEGIN IMMEDIATE")
+            peer.execute(
+                "INSERT INTO agents "
+                "(id, name, workstream, description, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (agent_id, "winner", None, None, ts, ts),
+            )
+            peer.execute(
+                "INSERT INTO agent_aliases (alias_path, agent_id, created_at) "
+                "VALUES (?, ?, ?)",
+                (canonical, agent_id, ts),
+            )
+
+            # Fail the loser's BEGIN IMMEDIATE fast so the retry loop engages.
+            main.execute("PRAGMA busy_timeout = 50")
+
+            committed = {"done": False}
+
+            def releasing_sleep(_delay: float) -> None:
+                if not committed["done"]:
+                    peer.execute("COMMIT")
+                    committed["done"] = True
+
+            with patch("np_agent_memory.db.time.sleep", releasing_sleep):
+                result = register_agent(main, name="loser", agent_cwd=str(repo))
+
+        assert committed["done"], "the loser never retried (no race exercised)"
+        assert result["registered"] == "existing"
+        assert result["name"] == "loser"  # name is always rewritten
+        with open_connection(db_path) as check:
+            assert check.execute("SELECT COUNT(*) FROM agents").fetchone()[0] == 1
+            assert (
+                check.execute("SELECT COUNT(*) FROM agent_aliases").fetchone()[0] == 1
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +331,77 @@ class TestDescribeAgent:
         assert result["active_blockers"] == 1
         assert result["unread_messages"] == 1
 
+    def test_registered_returns_metadata_fields(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        register_agent(
+            db_conn,
+            name="a",
+            agent_cwd=str(tmp_path),
+            workstream="np",
+            description="role",
+        )
+        result = describe_agent(db_conn, agent_cwd=str(tmp_path))
+        assert result["workstream"] == "np"
+        assert result["description"] == "role"
+        assert "\\" not in result["canonical_path"]
+        assert "id" not in result
+        assert "agent_id" not in result
+
+    @pytest.mark.parametrize(
+        ("status", "counted"),
+        [
+            ("pending", True),
+            ("in_progress", True),
+            ("blocked", True),
+            ("done", False),
+            ("cancelled", False),
+        ],
+    )
+    def test_open_todo_status_filter_is_exhaustive(
+        self,
+        db_conn: sqlite3.Connection,
+        tmp_path: Path,
+        status: str,
+        counted: bool,
+    ) -> None:
+        register_agent(db_conn, name="a", agent_cwd=str(tmp_path))
+        agent_id = _agent_id_for(db_conn, canonicalize_agent_cwd(str(tmp_path)))
+        ts = now_iso()
+        db_conn.execute(
+            "INSERT INTO todos (id, agent_id, title, status, priority, "
+            "created_at, updated_at) VALUES (?, ?, 't', ?, 'normal', ?, ?)",
+            (new_ulid(), agent_id, status, ts, ts),
+        )
+        result = describe_agent(db_conn, agent_cwd=str(tmp_path))
+        assert result["open_todos"] == (1 if counted else 0)
+
+    @pytest.mark.parametrize(
+        ("status", "counted"),
+        [
+            ("active", True),
+            ("escalated", True),
+            ("resolved", False),
+        ],
+    )
+    def test_active_blocker_status_filter(
+        self,
+        db_conn: sqlite3.Connection,
+        tmp_path: Path,
+        status: str,
+        counted: bool,
+    ) -> None:
+        register_agent(db_conn, name="a", agent_cwd=str(tmp_path))
+        agent_id = _agent_id_for(db_conn, canonicalize_agent_cwd(str(tmp_path)))
+        ts = now_iso()
+        db_conn.execute(
+            "INSERT INTO blockers (id, agent_id, title, status, raised_at) "
+            "VALUES (?, ?, 'b', ?, ?)",
+            (new_ulid(), agent_id, status, ts),
+        )
+        result = describe_agent(db_conn, agent_cwd=str(tmp_path))
+        assert result["active_blockers"] == (1 if counted else 0)
+
 
 # ---------------------------------------------------------------------------
 # add_alias
@@ -267,6 +454,26 @@ class TestAddAlias:
         register_agent(db_conn, name="agent-b", agent_cwd=str(path_b))
         with pytest.raises(ValueError, match="different agent"):
             add_alias(db_conn, agent_cwd=str(path_a), new_cwd=str(path_b))
+
+    def test_moved_source_path_still_resolves(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        # Move/rename recovery: the old registered path no longer exists on
+        # disk, but it can still be used as the add_alias source to attach the
+        # new path to the same agent (source canonicalized in lookup mode).
+        old = tmp_path / "old"
+        new = tmp_path / "new"
+        old.mkdir()
+        new.mkdir()
+        register_agent(db_conn, name="a", agent_cwd=str(old))
+        old.rmdir()  # old path is gone after the move
+
+        result = add_alias(db_conn, agent_cwd=str(old), new_cwd=str(new))
+        assert result["added"] is True
+
+        via_new = describe_agent(db_conn, agent_cwd=str(new))
+        assert via_new["registered"] is True
+        assert via_new["name"] == "a"
 
 
 # ---------------------------------------------------------------------------

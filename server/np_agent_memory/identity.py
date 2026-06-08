@@ -23,29 +23,48 @@ from pathlib import Path
 
 from ulid import ULID
 
+# Upper bound on an accepted path length. Guards against a pathological caller
+# bloating the DB / tool responses with an enormous ``agent_cwd``. Comfortably
+# above any real repo root (Windows MAX_PATH is 260; extended-length is 32767).
+_MAX_PATH_LEN = 4096
 
-def canonicalize_agent_cwd(path: str) -> str:
+
+def canonicalize_agent_cwd(path: str, *, require_exists: bool = True) -> str:
     """Canonicalize an agent-supplied working directory for alias storage.
 
     Pipeline: validate non-empty + absolute -> resolve (symlinks, ``..``) ->
     normalize case (Windows) -> forward-slash separators -> strip a trailing
     separator unless the path is a filesystem anchor (e.g. ``c:/``).
 
-    The path must already exist and be a directory: resolving a non-existent
-    path would silently mint a phantom agent identity from a typo.
+    When ``require_exists`` is True (the default) the path must already exist
+    and be a directory: resolving a non-existent path would silently mint a
+    phantom agent identity from a typo. Lookups that resolve an *already
+    stored* alias (e.g. the source side of :func:`add_alias` after a repo has
+    moved and the old path is gone) pass ``require_exists=False`` — they cannot
+    mint a phantom because the canonical result must still match an existing
+    ``agent_aliases`` row.
 
     Args:
         path: Absolute filesystem path the agent considers its root (typically
             ``git rev-parse --show-toplevel``).
+        require_exists: Require the path to exist and be a directory. Use the
+            default for establishing identity; pass False only to canonicalize
+            a stored alias key for lookup.
 
     Returns:
         The canonical alias-path string stored in ``agent_aliases.alias_path``.
 
     Raises:
-        ValueError: If ``path`` is empty, relative, missing, or not a directory.
+        ValueError: If ``path`` is empty, relative, too long, unresolvable, or
+            (when ``require_exists``) missing or not a directory.
     """
     if not path or not path.strip():
         raise ValueError("agent_cwd must be a non-empty path.")
+
+    if len(path) > _MAX_PATH_LEN:
+        raise ValueError(
+            f"agent_cwd is too long ({len(path)} chars, max {_MAX_PATH_LEN})."
+        )
 
     # Reject relative paths up front: Path.resolve() would resolve them against
     # the server's own cwd (the plugin install dir), producing a wrong identity.
@@ -55,15 +74,27 @@ def canonicalize_agent_cwd(path: str) -> str:
             f"Pass your repository root (e.g. `git rev-parse --show-toplevel`)."
         )
 
-    resolved = Path(path).resolve()
+    # resolve()/exists()/is_dir() touch the filesystem and can raise OSError on
+    # unreachable UNC shares, permission errors, or malformed paths; surface a
+    # clean validation error instead of leaking the OS-level traceback.
+    try:
+        resolved = Path(path).resolve()
+        if require_exists:
+            exists = resolved.exists()
+            is_dir = resolved.is_dir() if exists else False
+        else:
+            exists = is_dir = True  # not checked in lookup mode
+    except OSError as exc:
+        raise ValueError(f"agent_cwd could not be resolved: {path!r} ({exc}).") from exc
 
-    if not resolved.exists():
-        raise ValueError(
-            f"agent_cwd does not exist: {path!r} (resolved to {resolved}). "
-            f"Pass an existing repository root."
-        )
-    if not resolved.is_dir():
-        raise ValueError(f"agent_cwd must be a directory, got a file: {path!r}.")
+    if require_exists:
+        if not exists:
+            raise ValueError(
+                f"agent_cwd does not exist: {path!r} (resolved to {resolved}). "
+                f"Pass an existing repository root."
+            )
+        if not is_dir:
+            raise ValueError(f"agent_cwd must be a directory, got a file: {path!r}.")
 
     canonical = os.path.normcase(str(resolved)).replace("\\", "/")
     anchor = os.path.normcase(resolved.anchor).replace("\\", "/")

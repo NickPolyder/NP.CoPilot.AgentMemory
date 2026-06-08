@@ -5,6 +5,14 @@ their canonical working directory (``agent_cwd``); the server resolves that to
 an internal agent row via ``agent_aliases``. See ``np_agent_memory.identity``
 for the canonicalization contract and ``docs/spike-roots.md`` for why
 ``agent_cwd`` is required rather than derived.
+
+Trust model: ``agent_cwd`` is a *routing key, not authentication*. Every agent
+runs as the same OS user over local stdio (see ADR 0001), so any local agent
+that knows another agent's path could assert that identity. This is an accepted
+assumption for the single-user, local, secret-free v1 and must be revisited
+before any multi-user, cross-machine, or privileged use. Stored metadata
+(``name``/``workstream``/``description`` and, later, message/handover bodies)
+is agent-controlled and must be treated as untrusted by downstream renderers.
 """
 
 from __future__ import annotations
@@ -21,6 +29,30 @@ from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
 _OPEN_TODO_STATUSES = ("pending", "in_progress", "blocked")
 # Blocker statuses that count as "still active" for the describe summary.
 _ACTIVE_BLOCKER_STATUSES = ("active", "escalated")
+
+# Server-side caps on agent-supplied identity metadata. Guard against a
+# pathological caller bloating the DB / tool responses; generous vs real use.
+_MAX_NAME_LEN = 128
+_MAX_WORKSTREAM_LEN = 128
+_MAX_DESCRIPTION_LEN = 4096
+
+
+def _validate_metadata(
+    *, name: str, workstream: str | None, description: str | None
+) -> None:
+    """Validate agent metadata at the API boundary.
+
+    ``register_agent`` rewrites ``name`` on every call, so a blank name would
+    silently clobber a useful label; reject it. Length caps bound stored size.
+    """
+    if not name or not name.strip():
+        raise ValueError("name must be a non-empty, non-whitespace string.")
+    if len(name) > _MAX_NAME_LEN:
+        raise ValueError(f"name is too long (max {_MAX_NAME_LEN} chars).")
+    if workstream is not None and len(workstream) > _MAX_WORKSTREAM_LEN:
+        raise ValueError(f"workstream is too long (max {_MAX_WORKSTREAM_LEN} chars).")
+    if description is not None and len(description) > _MAX_DESCRIPTION_LEN:
+        raise ValueError(f"description is too long (max {_MAX_DESCRIPTION_LEN} chars).")
 
 
 def register_agent(
@@ -40,6 +72,7 @@ def register_agent(
     retried on lock contention so a concurrent first-registration race resolves
     to one agent.
     """
+    _validate_metadata(name=name, workstream=workstream, description=description)
     canonical = canonicalize_agent_cwd(agent_cwd)
 
     def _work(c: sqlite3.Connection) -> tuple[str, sqlite3.Row]:
@@ -100,9 +133,16 @@ def describe_agent(conn: sqlite3.Connection, *, agent_cwd: str) -> dict[str, Any
     """Return the calling agent's metadata plus open-work counts.
 
     Reads run in a single deferred transaction so the alias lookup and the
-    three counts share one consistent snapshot. Unknown paths return a soft
-    ``{"registered": False}`` (no exception) so a session-start probe can
-    branch on it.
+    three counts share one consistent snapshot.
+
+    Two outcome channels — callers should handle both:
+
+    * A *valid but unregistered* path returns a soft ``{"registered": False}``
+      (no exception) so a session-start probe can branch on it.
+    * A *malformed* ``agent_cwd`` (empty, relative, too long, unresolvable, or
+      not an existing directory) raises ``ValueError`` from canonicalization —
+      it is a caller error, not an "unregistered" answer, and is surfaced so a
+      typo'd or stale repo root is not silently treated as unregistered.
     """
     canonical = canonicalize_agent_cwd(agent_cwd)
 
@@ -170,8 +210,15 @@ def add_alias(
     Idempotent when ``new_cwd`` already maps to the same agent. Raises if the
     source path is unregistered, or if ``new_cwd`` already belongs to a
     *different* agent (which would silently merge two identities).
+
+    The source ``agent_cwd`` is canonicalized in *lookup* mode
+    (``require_exists=False``): it is resolved against an existing
+    ``agent_aliases`` row, not used to mint identity, so a moved/renamed repo
+    whose old path no longer exists on disk can still be used as the source to
+    attach its new path. ``new_cwd`` is canonicalized strictly — it must be an
+    existing directory, since it establishes a new alias.
     """
-    canonical_src = canonicalize_agent_cwd(agent_cwd)
+    canonical_src = canonicalize_agent_cwd(agent_cwd, require_exists=False)
     canonical_new = canonicalize_agent_cwd(new_cwd)
 
     def _work(c: sqlite3.Connection) -> bool:
@@ -271,11 +318,18 @@ def register_agent_tools(mcp: FastMCP) -> None:
         """Add another working-directory alias for an existing agent.
 
         Use when the same agent works from a second path (e.g. a new git
-        work-tree) that does not canonicalize to the existing root.
+        work-tree) that does not canonicalize to the existing root, or to
+        recover after a repo move/rename: pass the OLD registered path as
+        ``agent_cwd`` and the NEW path as ``new_cwd``. Call this BEFORE
+        re-registering from the new path, otherwise ``agent_register`` mints a
+        separate agent and this tool will refuse to merge the two identities.
 
         Args:
-            agent_cwd: An absolute path already registered to the agent.
+            agent_cwd: A path already registered to the agent. Need not still
+                exist on disk (so a moved repo's old path still works); it is
+                resolved against the stored aliases.
             new_cwd: The additional absolute path to attach to the same agent.
+                Must be an existing directory.
 
         Returns:
             ``added`` (False if the alias already existed) and both canonical

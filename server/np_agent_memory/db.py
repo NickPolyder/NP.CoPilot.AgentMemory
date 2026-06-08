@@ -1,6 +1,5 @@
 """Database layer: data folder provisioning and connection factory.
 
-Phase 2 scope:
 * Resolve the runtime data directory ($HOME/.copilot/np-agent-memory/ or
   AGENT_MEMORY_DIR override).
 * Provision the folder structure (db, backups/, logs/) on first access.
@@ -8,6 +7,12 @@ Phase 2 scope:
   foreign keys on every connection.
 * Per-call connections — no connection pooling, no shared in-memory state.
   Multiple MCP server processes may hit the same DB concurrently.
+
+This module is the lowest layer: it depends on nothing else in the package.
+Startup orchestration (ensure dirs -> run migrations) lives in
+``np_agent_memory.startup`` so that ``db`` never imports ``migrations`` (the
+dependency direction is ``startup -> {db, migrations}`` and ``migrations ->
+db``).
 """
 
 from __future__ import annotations
@@ -15,7 +20,6 @@ from __future__ import annotations
 import os
 import random
 import sqlite3
-import sys
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
@@ -112,12 +116,13 @@ _PRAGMAS = [
 ]
 
 
-def _configure_connection(conn: sqlite3.Connection) -> None:
+def configure_connection(conn: sqlite3.Connection) -> None:
     """Apply runtime pragmas to a fresh connection.
 
-    Shared by both the connection factory and the migration runner to avoid
-    pragma drift. Verifies WAL mode was actually set (it can silently fail
-    if another process holds an exclusive lock during checkpoint).
+    Public, shared contract used by both the connection factory and the
+    migration runner to avoid pragma drift. Verifies WAL mode was actually set
+    (it can silently fail if another process holds an exclusive lock during
+    checkpoint).
     """
     for pragma in _PRAGMAS:
         result = conn.execute(pragma)
@@ -153,7 +158,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     # Close the connection if configuration fails (e.g. WAL verification),
     # otherwise the descriptor leaks on every failed per-call connection.
     try:
-        _configure_connection(conn)
+        configure_connection(conn)
     except Exception:
         conn.close()
         raise
@@ -217,7 +222,12 @@ def _run_in_txn[T](
             try:
                 result = work(conn)
             except BaseException:
-                conn.execute("ROLLBACK")
+                # Guard the rollback: if SQLite already auto-rolled-back (e.g.
+                # SQLITE_FULL/IOERR), an explicit ROLLBACK raises "no
+                # transaction is active" and would mask the original error.
+                if conn.in_transaction:
+                    with suppress(sqlite3.OperationalError):
+                        conn.execute("ROLLBACK")
                 raise
             conn.execute("COMMIT")
             return result
@@ -253,28 +263,3 @@ def run_in_read_txn[T](
     values (e.g. several COUNT(*) queries) cannot straddle a concurrent commit.
     """
     return _run_in_txn(conn, work, "BEGIN DEFERRED")
-
-
-# ---------------------------------------------------------------------------
-# Startup helper (called once per server process)
-# ---------------------------------------------------------------------------
-
-
-def init_db(data_dir: Path | None = None) -> Path:
-    """One-time initialization: ensure dirs exist, run migrations, return db path.
-
-    Called once at MCP server startup. Subsequent tool calls use open_connection().
-    """
-    from np_agent_memory.migrations import run_migrations
-
-    data_dir = ensure_data_dir(data_dir)
-    db_path = get_db_path(data_dir)
-
-    print(
-        f"[np-agent-memory] db: {db_path}",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    run_migrations(db_path)
-    return db_path

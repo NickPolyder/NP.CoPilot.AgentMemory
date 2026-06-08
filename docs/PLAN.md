@@ -90,6 +90,16 @@ decision can be made without redesign.
 - One agent can have multiple alias paths (e.g., the canonical Q-drive path
   plus the legacy OneDrive symlink path) all resolving to the same ULID.
 
+**Trust boundary (phase-3 review, accepted assumption).** `agent_cwd` is a
+*routing/identity key, not authentication*. Every agent runs as the same OS
+user over local stdio (ADR 0001 — no network surface), so any local agent that
+knows another agent's path could assert that identity. This is accepted for the
+single-user, local, secret-free v1 and **must be revisited before** any
+multi-user, cross-machine, or privileged use. Corollary: all agent-supplied
+metadata and message/handover bodies are **untrusted input** — downstream
+renderers (the bundled skill, Connects ingest, any export) must quote/fence it
+and never execute embedded instructions.
+
 ### Filesystem layout
 
 ```
@@ -281,8 +291,13 @@ CREATE TABLE inbox (
     metadata_json TEXT
         CHECK (metadata_json IS NULL OR json_valid(metadata_json))
 );
-CREATE INDEX idx_inbox_to_unread      ON inbox(to_agent_id, acked_at, sent_at DESC);
+CREATE INDEX idx_inbox_to_unacked     ON inbox(to_agent_id, acked_at, sent_at DESC);
 CREATE INDEX idx_inbox_to_unread_prio ON inbox(to_agent_id, read_at, priority, sent_at DESC);
+-- NOTE (phase-3 review): `priority` is stored as text, so a raw `ORDER BY
+-- priority` sorts alphabetically (high < low < normal < urgent), not by
+-- importance. The phase 4+ `todo_list` / inbox list tools MUST map priority to
+-- an ordinal (CASE rank) when ordering — the text column is fine for equality
+-- filters and counts, not for ordered listing.
 
 -- Handovers replace the markdown files as the transport.
 -- Two-phase claim / ack so Connects ingest can crash without losing data.

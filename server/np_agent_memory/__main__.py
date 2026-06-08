@@ -1,13 +1,11 @@
 """np-agent-memory MCP server entry point.
 
-Phase 2 scope: data folder provisioning, migration runner, and DB init on
-startup. The server now creates its runtime directory, applies versioned
-SQL migrations, and exposes the DB path in `memory_alive`. Real agent-scoped
-tools (agent_register, memory_log, todo_*, handover_*, inbox_*) ship from
-Phase 3 onwards.
+Boots the server: validates the Python runtime, initializes the database
+(provision dirs + run migrations) via ``np_agent_memory.startup``, registers
+the tool surface, and runs the stdio MCP loop.
 
 Conventions:
-* Per-call connections, WAL, busy_timeout — active from this phase.
+* Per-call connections, WAL, busy_timeout.
 * Every agent-scoped tool MUST accept an explicit `agent_cwd: str` per the
   identity-model amendment in docs/PLAN.md (`memory_alive` is intentionally
   server-scoped so it does NOT take `agent_cwd`).
@@ -43,7 +41,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory import __version__ as PACKAGE_VERSION
-from np_agent_memory.db import init_db
+from np_agent_memory.startup import init_db
 from np_agent_memory.tools import register_all_tools
 
 try:
