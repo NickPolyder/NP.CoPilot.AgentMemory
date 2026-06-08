@@ -503,3 +503,4 @@ class TestToolRegistration:
             "handover_ack",
             "handover_release",
         } <= names
+        assert {"inbox_send", "inbox_check", "inbox_ack"} <= names

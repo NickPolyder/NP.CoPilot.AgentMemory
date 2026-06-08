@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from np_agent_memory.tools.agents import register_agent_tools
 from np_agent_memory.tools.blockers import register_blocker_tools
 from np_agent_memory.tools.handovers import register_handover_tools
+from np_agent_memory.tools.inbox import register_inbox_tools
 from np_agent_memory.tools.memory import register_memory_tools
 from np_agent_memory.tools.todos import register_todo_tools
 
@@ -23,6 +24,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_todo_tools(mcp)
     register_blocker_tools(mcp)
     register_handover_tools(mcp)
+    register_inbox_tools(mcp)
 
 
 __all__ = [
@@ -30,6 +32,7 @@ __all__ = [
     "register_all_tools",
     "register_blocker_tools",
     "register_handover_tools",
+    "register_inbox_tools",
     "register_memory_tools",
     "register_todo_tools",
 ]
