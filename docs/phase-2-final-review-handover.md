@@ -21,7 +21,7 @@ This document is the authoritative to-do list to clear before committing Phase 2
 ## How to get back to a working state
 
 ```powershell
-cd C:\Repos\NP\NP.CoPilot.AgentMemory
+cd (git rev-parse --show-toplevel)
 $env:PYTHONPATH = "$(Get-Location)\server"
 # Run tests
 .\.venv\Scripts\python.exe -m pytest server\tests\ -q

@@ -14,7 +14,7 @@ next session.
 ## How to get back to a working state
 
 ```powershell
-cd C:\Repos\NP\NP.CoPilot.AgentMemory
+cd (git rev-parse --show-toplevel)
 $env:PYTHONPATH = "$(Get-Location)\server"
 # Run tests
 .\.venv\Scripts\python.exe -m pytest server\tests\ -q
@@ -113,7 +113,7 @@ path from scratch (the install dir was hand-synced during the Phase 3 `roots`
 probe / e2e and is NOT a clean marketplace install):
 
 ```powershell
-cd C:\Repos\NP\NP.CoPilot.AgentMemory
+cd (git rev-parse --show-toplevel)
 # Optional: remove the hand-synced install + its marketplace first
 copilot plugin uninstall np-agent-memory@np-agent-memory-marketplace
 copilot plugin marketplace remove np-agent-memory-marketplace
@@ -122,7 +122,7 @@ copilot plugin marketplace remove np-agent-memory-marketplace
 .\install.ps1
 
 # Reinstall from the local marketplace
-copilot plugin marketplace add C:\Repos\NP\NP.CoPilot.AgentMemory
+copilot plugin marketplace add $PWD
 copilot plugin install np-agent-memory@np-agent-memory-marketplace
 ```
 
