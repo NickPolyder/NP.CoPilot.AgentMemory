@@ -23,6 +23,9 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 11 | pending     | Update each workstream's `copilot-instructions.md` with a "Use agent-memory" section | 8 |
 | 12 | pending     | Optional one-time backfill of historical handover markdown files   | 10         |
 
+> **Phases 9–12 are cross-system handoffs** (files outside this repo). Ready-to-paste
+> prompts for the owning agents live in [`handoffs/`](handoffs/README.md).
+
 ## Decided up front (per planning session, 2026-05-25)
 
 - **Server language:** Python (with bundled venv via `install.ps1`)
