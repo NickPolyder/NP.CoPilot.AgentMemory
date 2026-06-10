@@ -27,7 +27,7 @@ other agents.
 |------------------------------------|---------------------------------------------------------------------|
 | Plan / architecture                | `docs/PLAN.md`                                                      |
 | MCP server (Python)                | `server/np_agent_memory/` ✅ Phase 1                                |
-| Bundled skill                      | `skills/agent-memory/SKILL.md` *(not yet created — Phase 8)*        |
+| Bundled skill                      | `skills/agent-memory/SKILL.md` ✅ Phase 8                           |
 | Plugin manifest                    | `.claude-plugin/plugin.json` ✅ Phase 1                             |
 | MCP registration                   | `.mcp.json` ✅ Phase 1                                              |
 | Installer (venv + deps)            | `install.ps1` ✅ Phase 1                                            |
