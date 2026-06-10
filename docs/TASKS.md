@@ -22,9 +22,15 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 10 | pending     | Rewrite global `handover-report` skill (dual-write transition, then `handover_save` only) | 5 |
 | 11 | pending     | Update each workstream's `copilot-instructions.md` with a "Use agent-memory" section | 8 |
 | 12 | pending     | Optional one-time backfill of historical handover markdown files   | 10         |
+| R  | pending     | Address full-review findings R1–R7 (see [`reviews/2026-06-10-full-review.md`](reviews/2026-06-10-full-review.md)) | 8 |
 
 > **Phases 9–12 are cross-system handoffs** (files outside this repo). Ready-to-paste
 > prompts for the owning agents live in [`handoffs/`](handoffs/README.md).
+>
+> **Review remediation (item R)** tracks the 2026-06-10 multi-model review backlog.
+> Priority set: R1 (backup retention), R2 (inbox ULID leak), R3 (cursor validation).
+> Full details and suggested order in
+> [`reviews/2026-06-10-full-review.md`](reviews/2026-06-10-full-review.md).
 
 ## Decided up front (per planning session, 2026-05-25)
 
