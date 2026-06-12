@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 import pytest
 from np_agent_memory.db import open_connection
-from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
+from np_agent_memory.identity import (
+    canonicalize_agent_cwd,
+    display_basename,
+    new_ulid,
+    now_iso,
+)
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools import register_all_tools
 from np_agent_memory.tools.agents import add_alias, describe_agent, register_agent
@@ -120,6 +125,17 @@ class TestUlidAndTimestamp:
         assert "+00:00" in now_iso()
 
 
+class TestDisplayBasename:
+    def test_preserves_on_disk_casing(self, tmp_path: Path) -> None:
+        repo = tmp_path / "MixedCase.Repo"
+        repo.mkdir()
+        assert display_basename(str(repo)) == "MixedCase.Repo"
+
+    def test_falls_back_to_agent_for_drive_root(self) -> None:
+        anchor = Path(os.getcwd()).anchor  # e.g. "C:\\" or "/"
+        assert display_basename(anchor) == "agent"
+
+
 # ---------------------------------------------------------------------------
 # register_agent
 # ---------------------------------------------------------------------------
@@ -179,10 +195,28 @@ class TestRegisterAgent:
     def test_blank_name_rejected(
         self, db_conn: sqlite3.Connection, tmp_path: Path
     ) -> None:
-        # name is rewritten on every register, so a blank name would clobber a
-        # good label — reject it at the boundary.
+        # A *provided* name must be non-blank: a whitespace-only string would
+        # clobber a good label. (Omitting name entirely is allowed — it
+        # defaults on create and preserves on update; covered separately.)
         with pytest.raises(ValueError, match="non-empty"):
             register_agent(db_conn, name="   ", agent_cwd=str(tmp_path))
+
+    def test_omitted_name_defaults_to_directory_name(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "MyCoolRepo"
+        repo.mkdir()
+        result = register_agent(db_conn, agent_cwd=str(repo))
+        assert result["registered"] == "new"
+        assert result["name"] == "MyCoolRepo"
+
+    def test_omitted_name_on_reregister_preserves_custom_name(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        register_agent(db_conn, name="custom-name", agent_cwd=str(tmp_path))
+        result = register_agent(db_conn, agent_cwd=str(tmp_path))
+        assert result["registered"] == "existing"
+        assert result["name"] == "custom-name"
 
     def test_overly_long_name_rejected(
         self, db_conn: sqlite3.Connection, tmp_path: Path

@@ -23,7 +23,12 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
-from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
+from np_agent_memory.identity import (
+    canonicalize_agent_cwd,
+    display_basename,
+    new_ulid,
+    now_iso,
+)
 from np_agent_memory.tools._common import resolve_agent_id
 
 # Todo statuses that count as "still open" for the describe summary.
@@ -39,16 +44,20 @@ _MAX_DESCRIPTION_LEN = 4096
 
 
 def _validate_metadata(
-    *, name: str, workstream: str | None, description: str | None
+    *, name: str | None, workstream: str | None, description: str | None
 ) -> None:
     """Validate agent metadata at the API boundary.
 
-    ``register_agent`` rewrites ``name`` on every call, so a blank name would
-    silently clobber a useful label; reject it. Length caps bound stored size.
+    ``name`` is optional: when omitted on first registration the server defaults
+    it to the working directory's name, and on re-registration an omitted name
+    preserves the stored label. A *provided* name must be non-blank — a blank
+    string would otherwise clobber a good label. Length caps bound stored size.
     """
-    if not name or not name.strip():
-        raise ValueError("name must be a non-empty, non-whitespace string.")
-    if len(name) > _MAX_NAME_LEN:
+    if name is not None and not name.strip():
+        raise ValueError(
+            "name, when provided, must be a non-empty, non-whitespace string."
+        )
+    if name is not None and len(name) > _MAX_NAME_LEN:
         raise ValueError(f"name is too long (max {_MAX_NAME_LEN} chars).")
     if workstream is not None and len(workstream) > _MAX_WORKSTREAM_LEN:
         raise ValueError(f"workstream is too long (max {_MAX_WORKSTREAM_LEN} chars).")
@@ -59,19 +68,21 @@ def _validate_metadata(
 def register_agent(
     conn: sqlite3.Connection,
     *,
-    name: str,
+    name: str | None = None,
     agent_cwd: str,
     workstream: str | None = None,
     description: str | None = None,
 ) -> dict[str, Any]:
     """Idempotently upsert an agent and its alias for ``agent_cwd``.
 
-    First call for a canonical path mints a new ULID + agent + alias. Repeat
-    calls update the agent's ``name`` (always) plus ``workstream`` /
-    ``description`` *only when provided* (``None`` never erases a stored value)
-    and bump ``updated_at``. Runs as a single ``BEGIN IMMEDIATE`` transaction,
-    retried on lock contention so a concurrent first-registration race resolves
-    to one agent.
+    First call for a canonical path mints a new ULID + agent + alias, defaulting
+    ``name`` to the working directory's own name (preserving on-disk casing)
+    when none is supplied. Repeat calls update the agent's ``name`` /
+    ``workstream`` / ``description`` *only when provided* (``None`` never erases
+    a stored value, so an omitted name does not reset a customized one) and bump
+    ``updated_at``. Runs as a single ``BEGIN IMMEDIATE`` transaction, retried on
+    lock contention so a concurrent first-registration race resolves to one
+    agent.
     """
     _validate_metadata(name=name, workstream=workstream, description=description)
     canonical = canonicalize_agent_cwd(agent_cwd)
@@ -82,8 +93,11 @@ def register_agent(
 
         if existing_agent_id is not None:
             agent_id = existing_agent_id
-            sets = ["name = ?", "updated_at = ?"]
-            params: list[Any] = [name, ts]
+            sets = ["updated_at = ?"]
+            params: list[Any] = [ts]
+            if name is not None:
+                sets.append("name = ?")
+                params.append(name)
             if workstream is not None:
                 sets.append("workstream = ?")
                 params.append(workstream)
@@ -95,11 +109,12 @@ def register_agent(
             registered = "existing"
         else:
             agent_id = new_ulid()
+            effective_name = name if name is not None else display_basename(agent_cwd)
             c.execute(
                 "INSERT INTO agents "
                 "(id, name, workstream, description, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (agent_id, name, workstream, description, ts, ts),
+                (agent_id, effective_name, workstream, description, ts, ts),
             )
             c.execute(
                 "INSERT INTO agent_aliases (alias_path, agent_id, created_at) "
@@ -252,8 +267,8 @@ def register_agent_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def agent_register(
-        name: str,
         agent_cwd: str,
+        name: str | None = None,
         workstream: str | None = None,
         description: str | None = None,
     ) -> dict[str, Any]:
@@ -264,10 +279,20 @@ def register_agent_tools(mcp: FastMCP) -> None:
         and (when supplied) workstream/description. Omitted optional fields are
         never cleared.
 
+        Naming: if you omit ``name``, the server defaults it to the working
+        directory's own name (e.g. ``NP.CoPilot.AgentMemory``) on first
+        registration. Prefer that default — surface it to the user and ask
+        whether they want a different name before overriding it. On a later
+        call, omitting ``name`` preserves whatever is already stored (it will
+        not reset to the directory name), so only pass ``name`` when the user
+        wants to change it.
+
         Args:
-            name: Human-readable agent name (e.g. "backend-developer").
             agent_cwd: Your absolute repository root. Use
                 ``git rev-parse --show-toplevel`` for git-backed agents.
+            name: Optional human-readable agent name. Defaults to the working
+                directory's name on first registration; omit on later calls to
+                keep the stored name.
             workstream: Optional workstream/grouping label.
             description: Optional short description of this agent's role.
 

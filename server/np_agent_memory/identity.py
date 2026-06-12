@@ -107,6 +107,22 @@ def canonicalize_agent_cwd(path: str, *, require_exists: bool = True) -> str:
     return canonical
 
 
+def display_basename(path: str) -> str:
+    """Return the directory's on-disk name, for use as a default agent name.
+
+    Unlike the canonical alias path (which ``normcase`` lowercases on Windows),
+    this preserves the real filesystem casing so a defaulted name reads
+    naturally (e.g. ``NP.CoPilot.AgentMemory`` rather than
+    ``np.copilot.agentmemory``). Falls back to ``"agent"`` when the path has no
+    name component (e.g. a bare drive root) or cannot be resolved.
+    """
+    try:
+        name = Path(path).resolve().name
+    except OSError:
+        name = ""
+    return name or "agent"
+
+
 def new_ulid() -> str:
     """Return a new ULID string used as an internal agent primary key."""
     return str(ULID())

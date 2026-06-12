@@ -65,12 +65,19 @@ never clears fields you omit):
 
 ```text
 agent_register(
-  name       = "backend-developer",          # your stable agent name
   agent_cwd  = "<the path above>",
+  name       = "backend-developer",          # optional; see note below
   workstream = "np-agent-memory",            # optional grouping label
   description = "Implements the MCP server"   # optional, one line
 )
 ```
+
+> **Naming:** if you omit `name`, the server defaults it to your working
+> directory's own name (e.g. `NP.CoPilot.AgentMemory`) on first registration.
+> Prefer that default — show it to the user and ask whether they want a
+> different name before overriding it. On later calls, omitting `name` keeps
+> whatever is stored (it won't reset to the directory name), so only pass
+> `name` when the user wants to change it.
 
 Then orient yourself before doing work:
 
@@ -98,7 +105,7 @@ truncated — pass `full=true` to get the untruncated value.
 
 | Tool | What it does |
 |------|--------------|
-| `agent_register(name, agent_cwd, workstream?, description?)` | Register/refresh you for this repo root. Idempotent. |
+| `agent_register(agent_cwd, name?, workstream?, description?)` | Register/refresh you for this repo root. Idempotent. `name` defaults to the directory name on first call; omit it later to keep the stored name. |
 | `agent_describe(agent_cwd)` | Your metadata + counts of open todos, active blockers, unread messages. |
 | `agent_add_alias(agent_cwd, new_cwd)` | Attach a second path to the same identity (work-tree, moved repo). |
 
