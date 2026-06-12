@@ -80,6 +80,18 @@ class TestCursor:
         with pytest.raises(ValueError, match="invalid cursor"):
             decode_cursor(token)
 
+    def test_rejects_nested_non_scalar_elements(self) -> None:
+        """Regression for review R3: forged cursors with nested arrays/objects
+        must raise a clean ValueError, not reach SQLite binding."""
+        for payload in ([["nested"]], [{"k": "v"}], ["ok", [1, 2]]):
+            token = encode_cursor(payload)
+            with pytest.raises(ValueError, match="invalid cursor"):
+                decode_cursor(token)
+
+    def test_accepts_scalar_elements(self) -> None:
+        for payload in (["s", 1], [2, "t", "id"], [None, "x"], [1.5, "y"]):
+            assert decode_cursor(encode_cursor(payload)) == payload
+
 
 class TestKeysetPredicate:
     def test_single_key(self) -> None:

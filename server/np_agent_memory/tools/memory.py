@@ -225,6 +225,7 @@ def export_memory(
     category: str | None = None,
     topic: str | None = None,
     since: str | None = None,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     """Render a window of the agent's notes as markdown (full content)."""
     limit = clamp_limit(limit)
@@ -236,7 +237,7 @@ def export_memory(
         category=category,
         topic=topic,
         since=since,
-        cursor=None,
+        cursor=cursor,
     )
 
     lines: list[str] = ["# Agent memory", ""]
@@ -353,6 +354,7 @@ def register_memory_tools(mcp: FastMCP) -> None:
         category: str | None = None,
         topic: str | None = None,
         since: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         """Render a window of your notes as human-readable markdown.
 
@@ -362,10 +364,12 @@ def register_memory_tools(mcp: FastMCP) -> None:
             category: Optional filter — "progress", "decision", or "note".
             topic: Optional exact-topic filter.
             since: Optional ISO-8601 lower bound on ``timestamp`` (inclusive).
+            cursor: Opaque token from a previous call's ``next_cursor``.
 
         Returns:
             ``markdown`` (full content, grouped by day → category), ``count``,
-            and ``next_cursor`` if more notes exist beyond the window.
+            and ``next_cursor`` (null when there is no further page) which you
+            pass back as ``cursor`` to render the next page.
         """
         with open_connection() as conn:
             return export_memory(
@@ -375,4 +379,5 @@ def register_memory_tools(mcp: FastMCP) -> None:
                 category=category,
                 topic=topic,
                 since=since,
+                cursor=cursor,
             )

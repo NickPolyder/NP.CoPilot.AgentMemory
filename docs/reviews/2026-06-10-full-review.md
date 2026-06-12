@@ -125,3 +125,54 @@ or data-loss bug; all are low blast radius.
 Each fix should keep the existing test suite green and add a focused regression
 test where applicable. No fix is started yet — this backlog is the source of
 truth for the remediation pass.
+
+---
+
+## Resolution (2026-06-12) — all findings closed ✅
+
+All R1–R7 fixed in the remediation pass; suite green at **235 passed**
+(up from 228 — +7 focused regression tests).
+
+| # | Resolution | Key change | Regression test |
+|---|------------|------------|-----------------|
+| R1 | Fixed | `start_lazy_daily_backup` now calls `prune_backups` after a successful `maybe_daily_backup` (`backup.py`). | `test_backup.py::TestLazyDailyBackup::test_lazy_thread_runs_backup_and_prunes_old_snapshots` |
+| R2 | Fixed | Dropped `from_agent_id`/`to_agent_id` from agent-facing inbox responses; `inbox_send` now echoes the `to` handle (`tools/inbox.py`). | `test_inbox.py::test_responses_never_expose_internal_agent_ulids` |
+| R3 | Fixed | `decode_cursor` now rejects non-scalar (nested array/object) elements before SQLite binding (`tools/_common.py`). | `test_common.py::TestCursor::test_rejects_nested_non_scalar_elements` |
+| R4 | Fixed | `memory_export` now accepts a `cursor` param threaded into `_fetch_notes`; `SKILL.md` updated. | `test_memory.py::TestExportMemory::test_cursor_pages_through_all_notes` |
+| R5 | Fixed | Installer validates a 3.12+ bootstrap interpreter up front and rebuilds an unsupported existing venv (`install.ps1`). | Verified by live idempotent re-run (reuse + rebuild paths). |
+| R6 | Fixed | Backup throttle only suppresses on *recent* pending rows (`_PENDING_BACKUP_WINDOW`); abandoned pending rows no longer block for 24h (`backup.py`). | `test_backup.py::TestMaybeDailyBackup::test_abandoned_pending_run_does_not_suppress_backup` (+ `test_recent_pending_run_still_suppresses_backup`) |
+| R7 | Fixed | Handoff doc step 3 now uses `ids=[h.id for h in batch.handovers]`. | n/a (doc) |
+
+**R2 note:** `handover_claim` still returns `agent_id` — kept deliberately. That
+is the cross-agent *ingest* boundary (Connects), not the agent-facing boundary;
+the trusted consumer uses it as a stable correlation key. Documented in
+`tools/handovers.py::_claimed_row`.
+
+---
+
+## Second review pass (2026-06-12) — post-remediation panel
+
+Three independent reviewers re-checked the R1–R7 diff before commit.
+
+| Reviewer | Model | Verdict |
+|----------|-------|---------|
+| review-gemini | Gemini 3.1 Pro | No issues found |
+| review-gpt    | GPT-5.5 | No issues — all of R1–R7 fully resolved |
+| review-opus   | Claude Opus 4.8 | 1 Low (R6 concurrency) — fixed below |
+
+### R8 — R6 narrowed the no-concurrent-backup guarantee · Low → Fixed ✅
+- **Where:** `server/np_agent_memory/backup.py` (`_perform_online_backup`,
+  `_PENDING_BACKUP_WINDOW`).
+- **Problem:** Bounding pending-row suppression to 5 minutes means a backup that
+  ever runs longer than the window could let a second process target the same
+  dated snapshot. `_perform_online_backup` wrote directly to ``dest_path`` with
+  no atomic rename, so two concurrent writers could corrupt that day's snapshot.
+- **Reporter:** Opus.
+- **Fix:** `_perform_online_backup` now writes to a unique
+  ``<name>.<uuid>.tmp`` file in the destination directory and ``os.replace``s it
+  into place; the temp file is removed on failure. Concurrent writers stay
+  isolated and the final snapshot is always whole — eliminating the corruption
+  class regardless of backup duration. Tests added:
+  `test_backup.py::TestRunBackup::test_success_leaves_no_temp_file` and an
+  updated `test_failure_records_unsuccessful_run` (asserts no temp file leaks on
+  failure). Suite now **236 passed**.

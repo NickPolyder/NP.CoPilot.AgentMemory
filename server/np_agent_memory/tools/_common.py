@@ -79,6 +79,16 @@ def decode_cursor(token: str) -> list[Any]:
         raise ValueError(f"invalid cursor: {token!r}.") from exc
     if not isinstance(values, list):
         raise ValueError(f"invalid cursor: {token!r}.")
+    # Every cursor element is an ordering-key value bound directly into a
+    # SQLite query. Reject nested arrays/objects here so a forged-but-decodable
+    # cursor is a clean ValueError instead of a sqlite3.ProgrammingError at bind
+    # time. ``bool`` is excluded explicitly (it is an ``int`` subclass but never
+    # a valid ordering key).
+    for value in values:
+        if isinstance(value, bool) or not isinstance(
+            value, (str, int, float, type(None))
+        ):
+            raise ValueError(f"invalid cursor: {token!r}.")
     return values
 
 

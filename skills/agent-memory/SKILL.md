@@ -108,7 +108,7 @@ truncated — pass `full=true` to get the untruncated value.
 |------|--------------|
 | `memory_log(agent_cwd, category, content, topic?, related_type?, related_id?, session_id?, metadata?)` | Append one note. `category` ∈ `progress` / `decision` / `note`. |
 | `memory_query(agent_cwd, limit, category?, topic?, since?, cursor?, full?)` | List notes newest-first, with filters + keyset pagination. |
-| `memory_export(agent_cwd, limit, category?, topic?, since?)` | Render a window of notes as markdown (grouped day → category) for human reading. |
+| `memory_export(agent_cwd, limit, category?, topic?, since?, cursor?)` | Render a window of notes as markdown (grouped day → category) for human reading. |
 
 ## Todos (work that outlives a session)
 

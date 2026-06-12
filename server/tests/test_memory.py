@@ -205,3 +205,24 @@ class TestExportMemory:
         log_memory(db_conn, agent_cwd=agent_cwd, category="note", content=big)
         out = export_memory(db_conn, agent_cwd=agent_cwd, limit=10)
         assert big in out["markdown"]
+
+    def test_cursor_pages_through_all_notes(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        """Regression for review R4: export must accept the cursor it returns so
+        callers can fetch every page, not just the first."""
+        for i in range(5):
+            log_memory(db_conn, agent_cwd=agent_cwd, category="note", content=f"c-{i}")
+
+        rendered: list[str] = []
+        cursor = None
+        for _ in range(10):  # safety bound
+            out = export_memory(db_conn, agent_cwd=agent_cwd, limit=2, cursor=cursor)
+            rendered.append(out["markdown"])
+            cursor = out["next_cursor"]
+            if cursor is None:
+                break
+
+        joined = "\n".join(rendered)
+        for i in range(5):
+            assert f"c-{i}" in joined

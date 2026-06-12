@@ -34,8 +34,7 @@ _MAX_BODY_LEN = 65_536
 _BODY_PREVIEW_LEN = 2_000
 
 _INBOX_COLUMNS = (
-    "id, from_agent_id, from_label, subject, body, priority, "
-    "sent_at, read_at, acked_at, metadata_json"
+    "id, from_label, subject, body, priority, sent_at, read_at, acked_at, metadata_json"
 )
 
 
@@ -95,7 +94,6 @@ def _row_to_message(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
         body, truncated = truncate(body, _BODY_PREVIEW_LEN)
     message: dict[str, Any] = {
         "id": row["id"],
-        "from_agent_id": row["from_agent_id"],
         "from_label": row["from_label"],
         "subject": row["subject"],
         "body": body,
@@ -126,7 +124,7 @@ def inbox_send(
     canonical = canonicalize_agent_cwd(agent_cwd)
     metadata_json = _metadata_to_json(metadata)
 
-    def _work(c: sqlite3.Connection) -> tuple[str, str, str]:
+    def _work(c: sqlite3.Connection) -> tuple[str, str]:
         sender_id = require_agent_id(c, canonical)
         sender = c.execute(
             "SELECT name FROM agents WHERE id = ?",
@@ -152,13 +150,13 @@ def inbox_send(
                 metadata_json,
             ),
         )
-        return message_id, ts, to_agent_id
+        return message_id, ts
 
-    message_id, ts, to_agent_id = run_in_write_txn(conn, _work)
+    message_id, ts = run_in_write_txn(conn, _work)
     return {
         "id": message_id,
         "sent_at": ts,
-        "to_agent_id": to_agent_id,
+        "to": to,
         "priority": priority,
     }
 
@@ -286,7 +284,8 @@ def register_inbox_tools(mcp: FastMCP) -> None:
             metadata: Optional JSON object of structured extras.
 
         Returns:
-            The new message's ``id``, ``sent_at``, ``to_agent_id`` and priority.
+            The new message's ``id``, ``sent_at``, echoed ``to`` handle and
+            priority.
         """
         with open_connection() as conn:
             return _send_inbox(

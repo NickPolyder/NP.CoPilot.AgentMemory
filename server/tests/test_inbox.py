@@ -62,7 +62,8 @@ def test_send_and_receive_happy_path_by_name(
     )
 
     assert sent["id"]
-    assert sent["to_agent_id"] == _agent_id_for(db_conn, recipient["cwd"])
+    assert sent["to"] == "bob"
+    assert "to_agent_id" not in sent
     assert sent["priority"] == "high"
 
     out = inbox_check(db_conn, agent_cwd=recipient["cwd"], limit=10)
@@ -70,7 +71,7 @@ def test_send_and_receive_happy_path_by_name(
     assert out["next_cursor"] is None
     msg = out["messages"][0]
     assert msg["id"] == sent["id"]
-    assert msg["from_agent_id"] == _agent_id_for(db_conn, sender["cwd"])
+    assert "from_agent_id" not in msg
     assert msg["from_label"] == "alice"
     assert msg["subject"] == "hello"
     assert msg["body"] == "body"
@@ -78,6 +79,31 @@ def test_send_and_receive_happy_path_by_name(
     assert msg["read_at"] is None
     assert msg["acked_at"] is None
     assert msg["metadata"] == {"k": "v", "n": 1}
+
+
+def test_responses_never_expose_internal_agent_ulids(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    """Regression for review R2: inbox responses must not leak agents.id ULIDs."""
+    sender = _register(db_conn, tmp_path, "sender", "alice")
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+
+    sent = inbox_send(db_conn, agent_cwd=sender["cwd"], to="bob", subject="s", body="b")
+    assert "to_agent_id" not in sent
+    assert "from_agent_id" not in sent
+
+    out = inbox_check(db_conn, agent_cwd=recipient["cwd"], limit=10)
+    msg = out["messages"][0]
+    assert "from_agent_id" not in msg
+    assert "to_agent_id" not in msg
+    assert msg["from_label"] == "alice"
+
+    # The message is still routed to the right internal identity in storage.
+    stored_to = db_conn.execute(
+        "SELECT to_agent_id FROM inbox WHERE id = ?", (sent["id"],)
+    ).fetchone()["to_agent_id"]
+    assert stored_to == _agent_id_for(db_conn, recipient["cwd"])
 
 
 def test_addressing_by_canonical_path(

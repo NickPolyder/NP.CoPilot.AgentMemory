@@ -200,7 +200,14 @@ def _require_consumer_id(consumer_id: str) -> str:
 
 
 def _claimed_row(row: sqlite3.Row) -> dict[str, Any]:
-    """Shape a claimed handover for the consumer (full body, with agent_name)."""
+    """Shape a claimed handover for the consumer (full body, with agent_name).
+
+    This is the cross-agent *ingest* boundary (e.g. Connects), not the
+    agent-facing boundary, so exposing the internal ``agent_id`` here is
+    deliberate: the trusted consumer uses it as a stable correlation key
+    alongside the human-readable ``agent_name``. Normal agent-scoped tools
+    never leak this id.
+    """
     return {
         "id": row["id"],
         "agent_id": row["agent_id"],

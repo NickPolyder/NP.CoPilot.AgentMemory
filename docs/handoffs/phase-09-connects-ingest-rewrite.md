@@ -39,7 +39,7 @@ this loop, and add the idempotency schema to `data/progress.db`.
          source_id      = h.id
        The UNIQUE(source_system, source_table, source_id) constraint makes a
        retry a no-op (INSERT ... ON CONFLICT DO NOTHING / UPSERT).
-3. handover_ack(consumer_id="connects-ingest", ids=[h.id for h in batch])
+3. handover_ack(consumer_id="connects-ingest", ids=[h.id for h in batch.handovers])
 4. Repeat while batch.count == limit (more may remain).
 5. On any failure mid-batch, call
      handover_release(consumer_id="connects-ingest", ids=[...], last_error="...")

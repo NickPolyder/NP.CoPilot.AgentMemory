@@ -8,9 +8,11 @@ explicit paths so tests can build isolated temp databases, mirroring
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 import threading
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,11 @@ from np_agent_memory.db import connect, ensure_data_dir, get_db_path, run_in_wri
 _BACKUP_PREFIX = "agent-memory-"
 _BACKUP_SUFFIX = ".db"
 _RECENT_BACKUP_WINDOW = timedelta(hours=24)
+# A genuine in-progress backup finishes in seconds. Only treat a pending
+# (``finished_at IS NULL``) run as "someone else is backing up right now" if it
+# started within this window; an older pending row is an abandoned/crashed run
+# and must not suppress today's backup (see review R6).
+_PENDING_BACKUP_WINDOW = timedelta(minutes=5)
 
 
 def _now_iso() -> str:
@@ -70,16 +77,30 @@ def _finish_backup_run(db_path: Path, run_id: int, *, success: bool) -> None:
 
 
 def _perform_online_backup(db_path: Path, dest_path: Path) -> None:
-    """Copy ``db_path`` to ``dest_path`` using SQLite's online backup API."""
-    src = sqlite3.connect(str(db_path))
+    """Copy ``db_path`` to ``dest_path`` using SQLite's online backup API.
+
+    The copy is written to a unique temporary file in the destination directory
+    and then atomically renamed into place. Because the pending-row throttle in
+    :func:`maybe_daily_backup` only suppresses *recent* in-progress runs (see
+    ``_PENDING_BACKUP_WINDOW``), two processes could in principle target the same
+    dated snapshot at once; the temp-file + ``os.replace`` keeps each writer's
+    output isolated and the final file always whole.
+    """
+    tmp_path = dest_path.with_name(f"{dest_path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        dest = sqlite3.connect(str(dest_path))
+        src = sqlite3.connect(str(db_path))
         try:
-            src.backup(dest)
+            dest = sqlite3.connect(str(tmp_path))
+            try:
+                src.backup(dest)
+            finally:
+                dest.close()
         finally:
-            dest.close()
-    finally:
-        src.close()
+            src.close()
+        os.replace(tmp_path, dest_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _run_backup_with_run_id(
@@ -113,19 +134,24 @@ def maybe_daily_backup(db_path: Path, backups_dir: Path) -> Path | None:
     """Run a backup unless a successful one completed in the last 24 hours.
 
     The throttle check and pending-row claim happen in one ``BEGIN IMMEDIATE``
-    transaction. A concurrent in-progress run also causes a skip so multiple
-    MCP server processes do not perform the same daily backup simultaneously.
+    transaction. A *recent* concurrent in-progress run also causes a skip so
+    multiple MCP server processes do not perform the same daily backup
+    simultaneously; an abandoned pending run (crashed before finishing) is
+    ignored once it ages past ``_PENDING_BACKUP_WINDOW``.
     """
     dest_path = _backup_path(backups_dir)
-    cutoff = (datetime.now(UTC) - _RECENT_BACKUP_WINDOW).isoformat()
+    now = datetime.now(UTC)
+    cutoff = (now - _RECENT_BACKUP_WINDOW).isoformat()
+    pending_cutoff = (now - _PENDING_BACKUP_WINDOW).isoformat()
     started_at = _now_iso()
 
     def _work(c: sqlite3.Connection) -> int | None:
         recent = c.execute(
             "SELECT id FROM backup_runs "
-            "WHERE started_at >= ? AND (success = 1 OR finished_at IS NULL) "
+            "WHERE (success = 1 AND started_at >= ?) "
+            "   OR (finished_at IS NULL AND started_at >= ?) "
             "ORDER BY started_at DESC LIMIT 1",
-            (cutoff,),
+            (cutoff, pending_cutoff),
         ).fetchone()
         if recent is not None:
             return None
@@ -181,7 +207,12 @@ def start_lazy_daily_backup() -> threading.Thread:
     def _run() -> None:
         try:
             data_dir = ensure_data_dir()
-            maybe_daily_backup(get_db_path(data_dir), data_dir / "backups")
+            backups_dir = data_dir / "backups"
+            created = maybe_daily_backup(get_db_path(data_dir), backups_dir)
+            if created is not None:
+                # Enforce the documented retention on the automatic path too;
+                # the manual memory_backup_now tool already prunes after a run.
+                prune_backups(backups_dir)
         except Exception as exc:  # pragma: no cover - best-effort background task
             print(
                 f"[np-agent-memory] lazy daily backup skipped: {exc!r}",

@@ -36,46 +36,98 @@ Write-Host "📁 Server source:    $serverDir"
 Write-Host "📄 Requirements:     $reqFile"
 Write-Host ''
 
-# --- 1. Find a bootstrap Python interpreter --------------------------------
+# --- 1. Find a bootstrap Python interpreter (>= 3.12) ----------------------
+# The migration runner depends on sqlite3.connect(autocommit=True) and
+# datetime.UTC, both new in 3.12. We validate the interpreter version up front
+# so we never create a venv we will only reject later.
+
+function Test-PythonVersion {
+    param([string[]]$PythonCommand)
+
+    $exe = $PythonCommand[0]
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    $exeArgs = @($PythonCommand | Select-Object -Skip 1)
+    $script = "import sys; print('%d.%d' % sys.version_info[:2]); sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+    $version = & $exe @($exeArgs + @('-c', $script)) 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        return $version
+    }
+    return $null
+}
+
+# Probe candidates newest-first. `py -3` picks the newest installed 3.x; the
+# explicit minor versions cover machines where the newest is < 3.12 but a
+# supported runtime is still installed alongside it.
+$bootstrapCandidates = @(
+    @('py', '-3'),
+    @('py', '-3.14'),
+    @('py', '-3.13'),
+    @('py', '-3.12'),
+    @('python'),
+    @('python3')
+)
 
 $pythonBootstrap = $null
-if (Get-Command py -ErrorAction SilentlyContinue) {
-    $pythonBootstrap = @('py', '-3')
-    Write-Host "🐍 Bootstrap Python: py -3"
-} elseif (Get-Command python -ErrorAction SilentlyContinue) {
-    $pythonBootstrap = @('python')
-    Write-Host "🐍 Bootstrap Python: python (from PATH)"
-} else {
-    throw "No Python interpreter found. Install Python 3.12+ and re-run."
+$bootstrapVersion = $null
+foreach ($candidate in $bootstrapCandidates) {
+    $detected = Test-PythonVersion -PythonCommand $candidate
+    if ($null -ne $detected) {
+        $pythonBootstrap  = $candidate
+        $bootstrapVersion = $detected
+        break
+    }
 }
+
+if ($null -eq $pythonBootstrap) {
+    throw "No Python 3.12+ interpreter found. Install Python 3.12+ and re-run."
+}
+Write-Host "🐍 Bootstrap Python: $($pythonBootstrap -join ' ') (v$bootstrapVersion)"
 
 $venvPython = Join-Path $venvDir 'Scripts\python.exe'
 
-# --- 2. Create or reuse the venv -------------------------------------------
+# --- 2. Create, reuse, or rebuild the venv ---------------------------------
+# A venv created by an older first run (e.g. on 3.11) installs cleanly but
+# crashes at first DB init. Detect that here and rebuild from the validated
+# bootstrap rather than reusing a venv we cannot support (review R5).
 
-if (Test-Path -LiteralPath $venvPython) {
-    Write-Host "✅ Venv already exists — reusing."
-} else {
+function New-Venv {
+    param([string[]]$PythonCommand, [string]$TargetDir)
+
     Write-Host "🛠  Creating venv..."
-    $bootstrapExe  = $pythonBootstrap[0]
-    $bootstrapArgs = @($pythonBootstrap | Select-Object -Skip 1)
-    & $bootstrapExe @($bootstrapArgs + @('-m', 'venv', $venvDir))
+    $exe = $PythonCommand[0]
+    $exeArgs = @($PythonCommand | Select-Object -Skip 1)
+    & $exe @($exeArgs + @('-m', 'venv', $TargetDir))
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed (exit $LASTEXITCODE)" }
+}
+
+$needsCreate = $true
+if (Test-Path -LiteralPath $venvPython) {
+    $existingVersion = Test-PythonVersion -PythonCommand @($venvPython)
+    if ($null -ne $existingVersion) {
+        Write-Host "✅ Venv already exists (Python $existingVersion) — reusing."
+        $needsCreate = $false
+    } else {
+        Write-Host "♻  Existing venv is unsupported (Python < 3.12) — rebuilding."
+        Remove-Item -LiteralPath $venvDir -Recurse -Force
+    }
+}
+
+if ($needsCreate) {
+    New-Venv -PythonCommand $pythonBootstrap -TargetDir $venvDir
 }
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     throw "Expected venv Python at '$venvPython' but it does not exist."
 }
 
-# --- 2b. Enforce Python 3.12+ ----------------------------------------------
-# The migration runner depends on sqlite3.connect(autocommit=True) and
-# datetime.UTC, both new in Python 3.12. A 3.10/3.11 venv installs cleanly but
-# crashes at first DB init, so fail fast and loud here instead.
+# --- 2b. Re-confirm the venv interpreter is 3.12+ --------------------------
 
 Write-Host "🔎 Verifying Python version (>= 3.12)..."
-$versionOutput = & $venvPython -c "import sys; print('%d.%d' % sys.version_info[:2]); sys.exit(0 if sys.version_info >= (3, 12) else 1)"
-if ($LASTEXITCODE -ne 0) {
-    throw "Python 3.12+ is required, but the venv interpreter is $versionOutput. Install Python 3.12+ and re-create the venv."
+$versionOutput = Test-PythonVersion -PythonCommand @($venvPython)
+if ($null -eq $versionOutput) {
+    throw "Python 3.12+ is required, but the venv interpreter is not. Delete '$venvDir' and re-run."
 }
 Write-Host "✅ Python $versionOutput OK."
 
