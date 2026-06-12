@@ -10,7 +10,7 @@
     {
       "name": "np-agent-memory",
       "source": "./",
-      "description": "Shared, persistent memory + cross-agent inbox + handover transport for every Copilot CLI agent on Nick's machine."
+      "description": "Shared, persistent memory + cross-agent inbox + handover transport for every Copilot CLI agent on your machine."
     }
   ]
 }

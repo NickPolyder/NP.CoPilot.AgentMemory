@@ -6,7 +6,7 @@
 
 [project]
 name = "np-agent-memory"
-version = "0.1.0"
+version = "0.4.0"
 description = "Shared SQLite-backed memory + cross-agent inbox for Copilot CLI agents."
 # Python 3.12+ is REQUIRED: the migration runner relies on
 # sqlite3.connect(autocommit=True) (PEP 249 mode, new in 3.12) and datetime.UTC.

@@ -1,26 +1,36 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-    Installer for the np-agent-memory Copilot CLI plugin.
+    Dev installer + optional runtime pre-warm for the np-agent-memory plugin.
 
 .DESCRIPTION
     Creates (or reuses) a Python virtual environment at .venv\ and pip-installs
-    the pinned dependencies from requirements.txt. Then self-verifies by
+    the pinned dependencies from requirements.txt, then self-verifies by
     importing the server package via the venv's Python.
 
     Idempotent — safe to re-run.
 
-    The venv lives INSIDE the plugin folder so that the Copilot CLI's
-    /plugin install command copies it as part of the plugin package. The
-    .mcp.json points at ${PLUGIN_ROOT}/.venv/Scripts/python.exe so the
-    plugin does not depend on whatever "python" happens to be on PATH at
-    server launch time.
+    The repo-local .venv is a DEVELOPMENT convenience (running tests, linting,
+    self-verifying imports). At RUNTIME the plugin does NOT use it: .mcp.json
+    launches `py -3 bootstrap.py`, which builds and uses a separate venv in the
+    runtime data dir ($HOME\.copilot\np-agent-memory\.venv) on first launch.
+
+    Pass -PrewarmRuntime to also build that runtime venv now (via
+    bootstrap.py --ensure-only), so a consumer's first CLI session is instant
+    instead of paying the cold-build cost.
+
+.PARAMETER PrewarmRuntime
+    Also build/refresh the runtime venv in the runtime data dir.
 
 .NOTES
     Self-verification is a HARD requirement (docs/spike-0.md §6 gotcha #3):
     the Copilot CLI does not surface MCP-server start failures to agents,
     so a broken install must be loud at install time, not silent at runtime.
 #>
+
+param(
+    [switch]$PrewarmRuntime
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -29,6 +39,7 @@ $pluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvDir    = Join-Path $pluginRoot '.venv'
 $reqFile    = Join-Path $pluginRoot 'requirements.txt'
 $serverDir  = Join-Path $pluginRoot 'server'
+$bootstrap  = Join-Path $pluginRoot 'bootstrap.py'
 
 Write-Host "📁 Plugin root:      $pluginRoot"
 Write-Host "📁 Venv target:      $venvDir"
@@ -188,7 +199,22 @@ try {
     throw "self-verify produced unexpected output (could not parse last line as JSON):`n$selfCheckOutput"
 }
 
-# --- 5. Next steps ---------------------------------------------------------
+# --- 5. Optional runtime pre-warm ------------------------------------------
+# Build the runtime venv now so a consumer's first CLI session does not pay the
+# cold-build cost. bootstrap.py --ensure-only builds/refreshes the runtime venv
+# (in the runtime data dir) and exits without launching the server.
+
+if ($PrewarmRuntime) {
+    Write-Host ''
+    Write-Host "🔥 Pre-warming the runtime venv (bootstrap.py --ensure-only)..."
+    $exe = $pythonBootstrap[0]
+    $exeArgs = @($pythonBootstrap | Select-Object -Skip 1)
+    & $exe @($exeArgs + @($bootstrap, '--ensure-only')) | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "runtime pre-warm failed (exit $LASTEXITCODE)" }
+    Write-Host "✅ Runtime venv ready."
+}
+
+# --- 6. Next steps ---------------------------------------------------------
 
 Write-Host ''
 Write-Host "✅ Install complete."

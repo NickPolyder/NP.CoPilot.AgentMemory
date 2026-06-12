@@ -22,7 +22,9 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 10 | pending     | Rewrite global `handover-report` skill (dual-write transition, then `handover_save` only) | 5 |
 | 11 | pending     | Update each workstream's `copilot-instructions.md` with a "Use agent-memory" section | 8 |
 | 12 | pending     | Optional one-time backfill of historical handover markdown files   | 10         |
-| R  | done ✅      | Address full-review findings R1–R7 (see [`reviews/2026-06-10-full-review.md`](reviews/2026-06-10-full-review.md)) | 8 |
+| R  | done ✅      | Address full-review findings R1–R8 (see [`reviews/2026-06-10-full-review.md`](reviews/2026-06-10-full-review.md)) | 8 |
+| D  | done ✅      | Public distribution: self-bootstrapping launcher + manifest/license/docs hardening ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0003](decisions/0003-public-distribution-bootstrap.md)) | R |
+| D-linux | pending | Cross-platform launcher (Linux/macOS `python3` + `bin/`, per-OS `.mcp.json`); revisit PyPI/`uvx` | D |
 
 > **Phases 9–12 are cross-system handoffs** (files outside this repo). Ready-to-paste
 > prompts for the owning agents live in [`handoffs/`](handoffs/README.md).

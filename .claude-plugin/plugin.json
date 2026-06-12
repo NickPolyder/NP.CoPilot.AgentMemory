@@ -1,9 +1,12 @@
 {
   "name": "np-agent-memory",
-  "description": "Shared, persistent memory + cross-agent inbox + handover transport for every Copilot CLI agent on Nick's machine. Backed by a single SQLite database in $HOME/.copilot/np-agent-memory/.",
-  "version": "0.1.0",
+  "description": "Shared, persistent memory + cross-agent inbox + handover transport for every Copilot CLI agent on your machine. Backed by a single SQLite database under $HOME/.copilot/np-agent-memory/.",
+  "version": "0.4.0",
   "author": {
     "name": "Nick Polyderopoulos"
   },
-  "keywords": ["copilot", "agent-memory", "mcp", "sqlite", "internal"]
+  "homepage": "https://github.com/NickPolyder/NP.CoPilot.AgentMemory",
+  "repository": "https://github.com/NickPolyder/NP.CoPilot.AgentMemory",
+  "license": "MIT",
+  "keywords": ["copilot", "agent-memory", "mcp", "sqlite", "handover"]
 }

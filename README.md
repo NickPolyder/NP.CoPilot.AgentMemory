@@ -1,13 +1,12 @@
 # NP.CoPilot.AgentMemory
 
-A Copilot CLI plugin that gives every agent on Nick's machine a persistent,
+A Copilot CLI plugin that gives every agent on your machine a persistent,
 shared memory across sessions — and a structured way to leave messages for
 other agents.
 
-> **Status:** Pre-implementation. The full design lives in [`docs/PLAN.md`](docs/PLAN.md).
-> Implementation is owned by an agent working in this repository. The
-> Connects agent (in `C:\path\to\Connects`) does NOT implement this —
-> it only tracks progress.
+> **Status:** v0.4.0 — usable and under real-world shakeout. Installs straight
+> from this repo (see [Install](#install-just-use-it) below). The full design
+> lives in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What this plugin does
 
@@ -30,7 +29,9 @@ other agents.
 | Bundled skill                      | `skills/agent-memory/SKILL.md` ✅ Phase 8                           |
 | Plugin manifest                    | `.claude-plugin/plugin.json` ✅ Phase 1                             |
 | MCP registration                   | `.mcp.json` ✅ Phase 1                                              |
-| Installer (venv + deps)            | `install.ps1` ✅ Phase 1                                            |
+| Runtime launcher (builds venv)     | `bootstrap.py` *(self-bootstrapping, Phase R+)*                    |
+| Dev installer (venv + deps)        | `install.ps1` ✅ Phase 1                                            |
+| Runtime Python venv                | `$HOME\.copilot\np-agent-memory\.venv\` *(built on first launch)*  |
 | Runtime SQLite DB                  | `$HOME\.copilot\np-agent-memory\agent-memory.db` *(plugin-owned, Phase 2)*   |
 | Runtime backups                    | `$HOME\.copilot\np-agent-memory\backups\` *(Phase 7)*               |
 | Runtime logs                       | `$HOME\.copilot\np-agent-memory\logs\`                              |
@@ -45,19 +46,57 @@ provenance is obvious to anyone inspecting `$HOME\.copilot\`.
 3. Phase 0 (the spike) is complete — see [`docs/spike-0.md`](docs/spike-0.md)
    and [`docs/decisions/0001-stdio-vs-long-lived-backend.md`](docs/decisions/0001-stdio-vs-long-lived-backend.md).
 
+## Install (just use it)
+
+You do **not** need to clone this repo. The only prerequisite is **Python
+3.12+ on PATH** (the Windows `py -3` launcher must resolve to 3.12 or newer).
+
+Run these inside the Copilot CLI:
+
+```text
+# Option A — install directly from the repo.
+/plugin install NickPolyder/NP.CoPilot.AgentMemory
+
+# Option B — register it as a marketplace first, then install by name.
+/plugin marketplace add NickPolyder/NP.CoPilot.AgentMemory
+/plugin install np-agent-memory@np-agent-memory-marketplace
+```
+
+Restart the CLI. On the **first** launch the plugin builds its own Python
+runtime (a virtualenv with the pinned dependencies) under
+`$HOME\.copilot\np-agent-memory\.venv`; this takes a few tens of seconds and
+its progress is logged to `~/.copilot/logs/process-*.log`. Every launch after
+that is instant. Verify the server is up by calling the tool:
+
+```text
+np-agent-memory-memory_alive
+```
+
+The runtime venv, database, and backups live in
+`$HOME\.copilot\np-agent-memory\` (override with `AGENT_MEMORY_DIR`) and
+**survive `copilot plugin update`** — only the install directory is replaced on
+update.
+
+> **No Python 3.12+?** The server cannot start and logs a clear `FATAL` line to
+> the process log. Install a newer Python (make sure `py -3` resolves to it)
+> and restart the CLI.
+
 ## Install (development loop)
 
-Requires PowerShell 7+ and Python 3.12+ on PATH (or the Windows `py` launcher).
-The migration runner depends on `sqlite3.connect(autocommit=True)` and
-`datetime.UTC`, both of which require Python 3.12 or newer.
+If you are *contributing* to the plugin, use the local installer to pre-build a
+repo-local `.venv` and self-verify the package imports. Requires PowerShell 7+
+and Python 3.12+ on PATH.
 
 ```powershell
 # 1. Build the bundled venv and self-verify the server package imports.
-./install.ps1
+#    Add -PrewarmRuntime to also build the runtime venv now (instant first
+#    session) instead of letting bootstrap.py build it on first launch.
+./install.ps1            # dev venv only
+./install.ps1 -PrewarmRuntime   # dev venv + pre-built runtime venv
 
-# 2. Register the marketplace and install the plugin.
+# 2. Register the local checkout as a marketplace and install the plugin.
 #    (Run inside the Copilot CLI.)
-/plugin marketplace add "C:\path\to\NP.CoPilot.AgentMemory"
+/plugin marketplace add "H:\Repos\NP\NP.CoPilot.AgentMemory"
 /plugin install np-agent-memory@np-agent-memory-marketplace
 
 # 3. Restart the CLI, then verify the server loaded by calling the tool:
@@ -65,14 +104,17 @@ The migration runner depends on `sqlite3.connect(autocommit=True)` and
 ```
 
 Re-running `install.ps1` is idempotent. It will reuse an existing `.venv`,
-re-pin dependencies from `requirements.txt`, and re-verify the import.
+re-pin dependencies from `requirements.txt`, and re-verify the import. The
+repo-local `.venv` is a dev convenience; at runtime the plugin always uses the
+self-bootstrapped venv in the runtime data dir (built by `bootstrap.py`).
 
-> **Pre-release note:** the bundled `0001_init.sql` is still being revised. The
-> runner refuses to start if a previously-applied migration's checksum changed
-> (it guards against edits to shipped SQL). Until v1 ships, if you hit a
-> "checksum mismatch" error after pulling, delete your dev database at
-> `$HOME\.copilot\np-agent-memory\` (or wherever `AGENT_MEMORY_DIR` points) and
-> let it re-initialize.
+> **Schema is forward-only.** The bundled `0001_init.sql` is frozen: the
+> migration runner refuses to start if a previously-applied migration's
+> checksum changes, so shipped SQL is never edited in place. Any schema change
+> ships as a **new** migration (`0002_*.sql`, `0003_*.sql`, …) that the runner
+> applies on next launch. (During the pre-1.0 shakeout, if you are an early
+> adopter and a not-yet-released `0001` changes underneath you, delete your dev
+> database at `$HOME\.copilot\np-agent-memory\` and let it re-initialize.)
 
 ## Development tooling
 
@@ -104,4 +146,4 @@ $env:PYTHONPATH = "$(Get-Location)\server"
 
 ## License
 
-MIT (TBD — finalize before publishing).
+MIT — see [`LICENSE`](LICENSE).
