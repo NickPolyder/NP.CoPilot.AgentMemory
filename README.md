@@ -57,6 +57,11 @@ and can even provision a compatible Python 3.12+ itself if you don't have one.
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
+```bash
+# Install uv once (Linux/macOS).
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 Then, inside the Copilot CLI:
 
 ```text
