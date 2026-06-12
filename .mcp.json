@@ -2,10 +2,9 @@
   "mcpServers": {
     "np-agent-memory": {
       "type": "local",
-      "command": "py",
-      "args": ["-3", "${PLUGIN_ROOT}/bootstrap.py"],
+      "command": "uvx",
+      "args": ["--from", "${PLUGIN_ROOT}", "np-agent-memory"],
       "env": {
-        "PYTHONPATH": "${PLUGIN_ROOT}/server",
         "PYTHONUNBUFFERED": "1"
       }
     }

@@ -4,9 +4,10 @@ A Copilot CLI plugin that gives every agent on your machine a persistent,
 shared memory across sessions — and a structured way to leave messages for
 other agents.
 
-> **Status:** v0.4.0 — usable and under real-world shakeout. Installs straight
-> from this repo (see [Install](#install-just-use-it) below). The full design
-> lives in [`docs/PLAN.md`](docs/PLAN.md).
+> **Status:** v0.5.0 — usable and under real-world shakeout. Installs straight
+> from this repo and runs via [`uv`](https://docs.astral.sh/uv/) (see
+> [Install](#install-just-use-it) below). The full design lives in
+> [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What this plugin does
 
@@ -29,9 +30,8 @@ other agents.
 | Bundled skill                      | `skills/agent-memory/SKILL.md` ✅ Phase 8                           |
 | Plugin manifest                    | `.claude-plugin/plugin.json` ✅ Phase 1                             |
 | MCP registration                   | `.mcp.json` ✅ Phase 1                                              |
-| Runtime launcher (builds venv)     | `bootstrap.py` *(self-bootstrapping, Phase R+)*                    |
-| Dev installer (venv + deps)        | `install.ps1` ✅ Phase 1                                            |
-| Runtime Python venv                | `$HOME\.copilot\np-agent-memory\.venv\` *(built on first launch)*  |
+| Dev installer (editable venv)      | `install.ps1` ✅ Phase 1                                            |
+| Runtime Python env                 | uv-managed (built from the plugin via `uvx`; uv cache)             |
 | Runtime SQLite DB                  | `$HOME\.copilot\np-agent-memory\agent-memory.db` *(plugin-owned, Phase 2)*   |
 | Runtime backups                    | `$HOME\.copilot\np-agent-memory\backups\` *(Phase 7)*               |
 | Runtime logs                       | `$HOME\.copilot\np-agent-memory\logs\`                              |
@@ -48,10 +48,16 @@ provenance is obvious to anyone inspecting `$HOME\.copilot\`.
 
 ## Install (just use it)
 
-You do **not** need to clone this repo. The only prerequisite is **Python
-3.12+ on PATH** (the Windows `py -3` launcher must resolve to 3.12 or newer).
+You do **not** need to clone this repo. The only prerequisite is
+[**`uv`**](https://docs.astral.sh/uv/) on PATH — uv builds and runs the server,
+and can even provision a compatible Python 3.12+ itself if you don't have one.
 
-Run these inside the Copilot CLI:
+```powershell
+# Install uv once (Windows). See https://docs.astral.sh/uv/ for other OSes.
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then, inside the Copilot CLI:
 
 ```text
 # Option A — install directly from the repo.
@@ -62,40 +68,37 @@ Run these inside the Copilot CLI:
 /plugin install np-agent-memory@np-agent-memory-marketplace
 ```
 
-Restart the CLI. On the **first** launch the plugin builds its own Python
-runtime (a virtualenv with the pinned dependencies) under
-`$HOME\.copilot\np-agent-memory\.venv`; this takes a few tens of seconds and
-its progress is logged to `~/.copilot/logs/process-*.log`. Every launch after
-that is instant. Verify the server is up by calling the tool:
+Restart the CLI. `.mcp.json` launches the server as
+`uvx --from ${PLUGIN_ROOT} np-agent-memory`: on the **first** launch uv builds
+the project and resolves its pinned dependencies (a few seconds, logged to
+`~/.copilot/logs/process-*.log`); subsequent launches reuse uv's cache. Verify
+the server is up by calling the tool:
 
 ```text
 np-agent-memory-memory_alive
 ```
 
-The runtime venv, database, and backups live in
-`$HOME\.copilot\np-agent-memory\` (override with `AGENT_MEMORY_DIR`) and
-**survive `copilot plugin update`** — only the install directory is replaced on
-update.
+The database, backups, and logs live in `$HOME\.copilot\np-agent-memory\`
+(override with `AGENT_MEMORY_DIR`) and are independent of the plugin install
+directory, so they **survive `copilot plugin update`**.
 
-> **No Python 3.12+?** The server cannot start and logs a clear `FATAL` line to
-> the process log. Install a newer Python (make sure `py -3` resolves to it)
-> and restart the CLI.
+> **No `uv`?** The server cannot start; the CLI logs the failure to
+> `~/.copilot/logs/process-*.log`. Install uv (command above) and restart the
+> CLI. uv handles the Python runtime — you do **not** need a separate Python
+> 3.12+ on PATH.
 
 ## Install (development loop)
 
-If you are *contributing* to the plugin, use the local installer to pre-build a
-repo-local `.venv` and self-verify the package imports. Requires PowerShell 7+
-and Python 3.12+ on PATH.
+If you are *contributing*, use the local installer to build a repo-local `.venv`
+with the project installed editable (`pip install -e ".[dev]"`) and self-verify
+the package imports. Requires PowerShell 7+ and Python 3.12+ on PATH.
 
 ```powershell
-# 1. Build the bundled venv and self-verify the server package imports.
-#    Add -PrewarmRuntime to also build the runtime venv now (instant first
-#    session) instead of letting bootstrap.py build it on first launch.
-./install.ps1            # dev venv only
-./install.ps1 -PrewarmRuntime   # dev venv + pre-built runtime venv
+# 1. Build the dev venv (editable install + dev extras) and self-verify imports.
+./install.ps1
 
 # 2. Register the local checkout as a marketplace and install the plugin.
-#    (Run inside the Copilot CLI.)
+#    (Run inside the Copilot CLI; the plugin itself still launches via uvx.)
 /plugin marketplace add "H:\Repos\NP\NP.CoPilot.AgentMemory"
 /plugin install np-agent-memory@np-agent-memory-marketplace
 
@@ -103,10 +106,9 @@ and Python 3.12+ on PATH.
 #    np-agent-memory-memory_alive
 ```
 
-Re-running `install.ps1` is idempotent. It will reuse an existing `.venv`,
-re-pin dependencies from `requirements.txt`, and re-verify the import. The
-repo-local `.venv` is a dev convenience; at runtime the plugin always uses the
-self-bootstrapped venv in the runtime data dir (built by `bootstrap.py`).
+Re-running `install.ps1` is idempotent. The repo-local `.venv` is a dev
+convenience (tests, linting); at runtime the plugin always runs via `uvx` from
+the installed plugin directory.
 
 > **Schema is forward-only.** The bundled `0001_init.sql` is frozen: the
 > migration runner refuses to start if a previously-applied migration's
@@ -118,11 +120,11 @@ self-bootstrapped venv in the runtime data dir (built by `bootstrap.py`).
 
 ## Development tooling
 
-Dev dependencies (test runner + linter) are pinned in `requirements-dev.txt`:
+Dev dependencies (test runner + linter) are declared as the `dev` extra in
+`pyproject.toml` and installed by `install.ps1`:
 
 ```powershell
-# Install dev tooling into the bundled venv.
-./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+# (install.ps1 already ran `pip install -e ".[dev]"`.)
 
 # Lint and format (Ruff — config in pyproject.toml).
 ./.venv/Scripts/ruff.exe check server          # lint

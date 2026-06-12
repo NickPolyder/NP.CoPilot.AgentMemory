@@ -1,6 +1,6 @@
 # ADR 0003 — Public distribution via a self-bootstrapping launcher
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0004](0004-launcher-via-uvx.md)
 - **Date:** 2026-06-11
 - **Decider:** Nick Polyderopoulos
 - **Context window:** Phase R closeout, first public release prep (v0.4.0)

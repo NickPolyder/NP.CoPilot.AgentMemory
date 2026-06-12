@@ -1,16 +1,61 @@
-# Tooling configuration for np-agent-memory.
+# Tooling + packaging configuration for np-agent-memory.
 # Ruff is the project linter + formatter (Black-compatible). Run:
 #   ruff check server          # lint
 #   ruff check --fix server    # lint + autofix
 #   ruff format server         # format
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "np-agent-memory"
-version = "0.4.0"
+version = "0.5.0"
 description = "Shared SQLite-backed memory + cross-agent inbox for Copilot CLI agents."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Nick Polyderopoulos" }]
+keywords = ["copilot", "agent-memory", "mcp", "sqlite", "handover"]
 # Python 3.12+ is REQUIRED: the migration runner relies on
 # sqlite3.connect(autocommit=True) (PEP 249 mode, new in 3.12) and datetime.UTC.
 requires-python = ">=3.12"
+dependencies = [
+  "mcp==1.26.0",
+  "python-ulid==3.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.0.3",
+  "ruff==0.15.15",
+]
+
+[project.urls]
+Homepage = "https://github.com/NickPolyder/NP.CoPilot.AgentMemory"
+Repository = "https://github.com/NickPolyder/NP.CoPilot.AgentMemory"
+
+# Console entry point. uvx (and `pip install`) expose this as `np-agent-memory`,
+# which .mcp.json launches: `uvx --from ${PLUGIN_ROOT} np-agent-memory`.
+[project.scripts]
+np-agent-memory = "np_agent_memory.__main__:main"
+
+# The package lives under server/ (src-style layout). Map it to the top-level
+# import name `np_agent_memory` in the built wheel. Hatchling ships every file
+# in the package directory, including the migrations/*.sql data files the
+# runner discovers via Path(__file__).parent.
+[tool.hatch.build.targets.wheel]
+packages = ["server/np_agent_memory"]
+
+[tool.uv]
+# Rebuild the uvx environment whenever the packaged source changes, so a
+# `copilot plugin update` is always picked up — even if a release forgot to
+# bump the version. (uv's default only invalidates a path build on version
+# change.)
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "server/np_agent_memory/**/*.py" },
+  { file = "server/np_agent_memory/**/*.sql" },
+]
 
 [tool.ruff]
 target-version = "py312"

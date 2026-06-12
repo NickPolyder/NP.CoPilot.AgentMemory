@@ -1,26 +1,20 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-    Dev installer + optional runtime pre-warm for the np-agent-memory plugin.
+    Development installer for the np-agent-memory Copilot CLI plugin.
 
 .DESCRIPTION
-    Creates (or reuses) a Python virtual environment at .venv\ and pip-installs
-    the pinned dependencies from requirements.txt, then self-verifies by
-    importing the server package via the venv's Python.
+    Creates (or reuses) a Python virtual environment at .venv\ and installs the
+    project in editable mode with its dev extras (`pip install -e ".[dev]"`),
+    then self-verifies by importing the server package via the venv's Python.
 
     Idempotent — safe to re-run.
 
-    The repo-local .venv is a DEVELOPMENT convenience (running tests, linting,
-    self-verifying imports). At RUNTIME the plugin does NOT use it: .mcp.json
-    launches `py -3 bootstrap.py`, which builds and uses a separate venv in the
-    runtime data dir ($HOME\.copilot\np-agent-memory\.venv) on first launch.
-
-    Pass -PrewarmRuntime to also build that runtime venv now (via
-    bootstrap.py --ensure-only), so a consumer's first CLI session is instant
-    instead of paying the cold-build cost.
-
-.PARAMETER PrewarmRuntime
-    Also build/refresh the runtime venv in the runtime data dir.
+    This is a DEVELOPMENT convenience (running tests, linting, self-verifying
+    imports). At RUNTIME the plugin does NOT use this venv: .mcp.json launches
+    `uvx --from ${PLUGIN_ROOT} np-agent-memory`, so uv builds and runs the
+    server in its own managed environment (and can provision Python 3.12+
+    itself). Consumers only need `uv` on PATH — see the README.
 
 .NOTES
     Self-verification is a HARD requirement (docs/spike-0.md §6 gotcha #3):
@@ -28,23 +22,16 @@
     so a broken install must be loud at install time, not silent at runtime.
 #>
 
-param(
-    [switch]$PrewarmRuntime
-)
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $pluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvDir    = Join-Path $pluginRoot '.venv'
-$reqFile    = Join-Path $pluginRoot 'requirements.txt'
 $serverDir  = Join-Path $pluginRoot 'server'
-$bootstrap  = Join-Path $pluginRoot 'bootstrap.py'
 
 Write-Host "📁 Plugin root:      $pluginRoot"
 Write-Host "📁 Venv target:      $venvDir"
 Write-Host "📁 Server source:    $serverDir"
-Write-Host "📄 Requirements:     $reqFile"
 Write-Host ''
 
 # --- 1. Find a bootstrap Python interpreter (>= 3.12) ----------------------
@@ -142,24 +129,24 @@ if ($null -eq $versionOutput) {
 }
 Write-Host "✅ Python $versionOutput OK."
 
-# --- 3. Install dependencies -----------------------------------------------
+# --- 3. Install the project (editable) + dev extras ------------------------
 
 Write-Host "🛠  Upgrading pip in venv..."
 & $venvPython -m pip install --upgrade --disable-pip-version-check pip | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed (exit $LASTEXITCODE)" }
 
-Write-Host "🛠  Installing pinned dependencies..."
+Write-Host "🛠  Installing project (editable) with dev extras from pyproject.toml..."
 # --no-cache-dir: we observed corrupt cached wheels on Python 3.14 / pip 26.1.1
 # producing site-packages without the .pyd binaries (pywin32, rpds-py,
 # pydantic-core, etc.), which made the server unimportable. Re-downloading
 # fresh wheels every install costs a few seconds but is always correct.
-& $venvPython -m pip install --disable-pip-version-check --no-cache-dir -r $reqFile | Out-Host
-if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
+& $venvPython -m pip install --disable-pip-version-check --no-cache-dir -e "$pluginRoot[dev]" | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "editable install failed (exit $LASTEXITCODE)" }
 
 # --- 4. Self-verify --------------------------------------------------------
 # Importing np_agent_memory.__main__ exercises:
 #   * the venv's site-packages (mcp SDK importable)
-#   * PYTHONPATH resolution (server/ is reachable as a package root)
+#   * the editable install (np_agent_memory resolves to server/np_agent_memory)
 #   * FastMCP instantiation at module load (the `mcp = FastMCP(...)` line
 #     runs but `mcp.run()` does NOT, because __name__ != "__main__")
 # A failure here means the production plugin would also fail to start
@@ -168,7 +155,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
 Write-Host "🔎 Self-verifying server package import..."
 
 $selfCheckScript = @"
-import sys, json
+import json
 import np_agent_memory.__main__ as m
 
 print(json.dumps({
@@ -178,14 +165,9 @@ print(json.dumps({
 }))
 "@
 
-$env:PYTHONPATH = $serverDir
-try {
-    $selfCheckOutput = & $venvPython -c $selfCheckScript 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "self-verify failed (exit $LASTEXITCODE)`n$selfCheckOutput"
-    }
-} finally {
-    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+$selfCheckOutput = & $venvPython -c $selfCheckScript 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "self-verify failed (exit $LASTEXITCODE)`n$selfCheckOutput"
 }
 
 $lastLine = ($selfCheckOutput | Select-Object -Last 1)
@@ -199,28 +181,16 @@ try {
     throw "self-verify produced unexpected output (could not parse last line as JSON):`n$selfCheckOutput"
 }
 
-# --- 5. Optional runtime pre-warm ------------------------------------------
-# Build the runtime venv now so a consumer's first CLI session does not pay the
-# cold-build cost. bootstrap.py --ensure-only builds/refreshes the runtime venv
-# (in the runtime data dir) and exits without launching the server.
-
-if ($PrewarmRuntime) {
-    Write-Host ''
-    Write-Host "🔥 Pre-warming the runtime venv (bootstrap.py --ensure-only)..."
-    $exe = $pythonBootstrap[0]
-    $exeArgs = @($pythonBootstrap | Select-Object -Skip 1)
-    & $exe @($exeArgs + @($bootstrap, '--ensure-only')) | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "runtime pre-warm failed (exit $LASTEXITCODE)" }
-    Write-Host "✅ Runtime venv ready."
-}
-
-# --- 6. Next steps ---------------------------------------------------------
+# --- 5. Next steps ---------------------------------------------------------
 
 Write-Host ''
-Write-Host "✅ Install complete."
+Write-Host "✅ Dev install complete."
 Write-Host "   Venv Python: $venvPython"
 Write-Host ''
-Write-Host "Next steps:"
+Write-Host "Run the tests:"
+Write-Host "  `$env:PYTHONPATH = `"$serverDir`"; & `"$venvPython`" -m pytest server\tests -q"
+Write-Host ''
+Write-Host "Install the plugin (consumers only need 'uv' on PATH):"
 Write-Host "  1) Restart Copilot CLI."
 Write-Host "  2) /plugin marketplace add `"$pluginRoot`""
 Write-Host "  3) /plugin install np-agent-memory@np-agent-memory-marketplace"

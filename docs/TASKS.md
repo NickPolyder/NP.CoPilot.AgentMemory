@@ -23,8 +23,9 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 11 | pending     | Update each workstream's `copilot-instructions.md` with a "Use agent-memory" section | 8 |
 | 12 | pending     | Optional one-time backfill of historical handover markdown files   | 10         |
 | R  | done ✅      | Address full-review findings R1–R8 (see [`reviews/2026-06-10-full-review.md`](reviews/2026-06-10-full-review.md)) | 8 |
-| D  | done ✅      | Public distribution: self-bootstrapping launcher + manifest/license/docs hardening ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0003](decisions/0003-public-distribution-bootstrap.md)) | R |
-| D-linux | pending | Cross-platform launcher (Linux/macOS `python3` + `bin/`, per-OS `.mcp.json`); revisit PyPI/`uvx` | D |
+| D  | done ✅      | Public distribution: self-bootstrapping launcher + manifest/license/docs hardening ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0003](decisions/0003-public-distribution-bootstrap.md)) — **superseded by D-uvx** | R |
+| D-uvx | done ✅  | Switch launcher to `uvx --from ${PLUGIN_ROOT} np-agent-memory`: hatchling packaging, entry point, `cache-keys`; remove `bootstrap.py`/`requirements*.txt`; cross-platform now solved ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0004](decisions/0004-launcher-via-uvx.md)) | D |
+| D-linux | done ✅ | Cross-platform launcher — **resolved by D-uvx** (`uvx` is the single command on Windows/Linux/macOS; uv provisions Python). PyPI/`uvx np-agent-memory` remains a post-1.0 option | D-uvx |
 
 > **Phases 9–12 are cross-system handoffs** (files outside this repo). Ready-to-paste
 > prompts for the owning agents live in [`handoffs/`](handoffs/README.md).
