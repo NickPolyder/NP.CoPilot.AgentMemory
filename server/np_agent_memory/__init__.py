@@ -6,4 +6,4 @@ they pass, and exposes ``agent_register`` / ``agent_describe`` /
 ``agent_add_alias``.
 """
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"

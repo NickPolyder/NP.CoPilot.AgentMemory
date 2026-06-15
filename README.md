@@ -4,7 +4,7 @@ A Copilot CLI plugin that gives every agent on your machine a persistent,
 shared memory across sessions — and a structured way to leave messages for
 other agents.
 
-> **Status:** v0.5.1 — usable and under real-world shakeout. Installs straight
+> **Status:** v0.6.0 — usable and under real-world shakeout. Installs straight
 > from this repo and runs via [`uv`](https://docs.astral.sh/uv/) (see
 > [Install](#install-just-use-it) below). The full design lives in
 > [`docs/PLAN.md`](docs/PLAN.md).
