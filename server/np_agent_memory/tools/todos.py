@@ -235,6 +235,7 @@ def update_todo(
     priority: str | None = None,
     due_date: str | None = None,
     description: str | None = None,
+    title: str | None = None,
 ) -> dict[str, Any]:
     """Update mutable fields of one of the agent's todos.
 
@@ -242,10 +243,20 @@ def update_todo(
     ``completed_at``; moving to any other status clears it. The todo must belong
     to the calling agent.
     """
-    if status is None and priority is None and due_date is None and description is None:
+    if (
+        status is None
+        and priority is None
+        and due_date is None
+        and description is None
+        and title is None
+    ):
         raise ValueError(
-            "Provide at least one of status, priority, due_date, description."
+            "Provide at least one of status, priority, due_date, description, title."
         )
+    if title is not None and not title.strip():
+        raise ValueError("title must be a non-empty, non-whitespace string.")
+    if title is not None and len(title) > _MAX_TITLE_LEN:
+        raise ValueError(f"title is too long (max {_MAX_TITLE_LEN} chars).")
     if status is not None and status not in _STATUSES:
         raise ValueError(f"status must be one of {_STATUSES}, got {status!r}.")
     if priority is not None and priority not in _PRIORITIES:
@@ -287,6 +298,9 @@ def update_todo(
         if description is not None:
             sets.append("description = ?")
             params.append(description)
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title)
         params.extend([todo_id, agent_id])
         c.execute(
             f"UPDATE todos SET {', '.join(sets)} WHERE id = ? AND agent_id = ?",
@@ -384,6 +398,7 @@ def register_todo_tools(mcp: FastMCP) -> None:
         priority: str | None = None,
         due_date: str | None = None,
         description: str | None = None,
+        title: str | None = None,
     ) -> dict[str, Any]:
         """Update one of your todos. Provide at least one field to change.
 
@@ -397,6 +412,7 @@ def register_todo_tools(mcp: FastMCP) -> None:
             priority: New priority (low/normal/high/urgent).
             due_date: New ISO-8601 due date/time.
             description: New description.
+            title: New title (non-empty, non-whitespace).
 
         Returns:
             The full updated todo.
@@ -410,4 +426,5 @@ def register_todo_tools(mcp: FastMCP) -> None:
                 priority=priority,
                 due_date=due_date,
                 description=description,
+                title=title,
             )

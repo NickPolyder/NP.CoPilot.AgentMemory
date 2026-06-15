@@ -232,3 +232,35 @@ class TestUpdateTodo:
         t = add_todo(db_conn, agent_cwd=agent_cwd, title="x")
         with pytest.raises(ValueError, match="status"):
             update_todo(db_conn, agent_cwd=agent_cwd, todo_id=t["id"], status="bogus")
+
+    def test_updates_title(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        t = add_todo(db_conn, agent_cwd=agent_cwd, title="old title")
+        out = update_todo(
+            db_conn, agent_cwd=agent_cwd, todo_id=t["id"], title="new title"
+        )
+        assert out["title"] == "new title"
+
+    def test_title_alone_satisfies_at_least_one_field(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        t = add_todo(db_conn, agent_cwd=agent_cwd, title="x")
+        out = update_todo(db_conn, agent_cwd=agent_cwd, todo_id=t["id"], title="y")
+        assert out["title"] == "y"
+
+    def test_rejects_blank_title(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        t = add_todo(db_conn, agent_cwd=agent_cwd, title="x")
+        with pytest.raises(ValueError, match="title"):
+            update_todo(db_conn, agent_cwd=agent_cwd, todo_id=t["id"], title="   ")
+
+    def test_rejects_too_long_title(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        t = add_todo(db_conn, agent_cwd=agent_cwd, title="x")
+        with pytest.raises(ValueError, match="title is too long"):
+            update_todo(
+                db_conn, agent_cwd=agent_cwd, todo_id=t["id"], title="a" * 257
+            )
