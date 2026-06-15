@@ -26,6 +26,7 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | D  | done ✅      | Public distribution: self-bootstrapping launcher + manifest/license/docs hardening ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0003](decisions/0003-public-distribution-bootstrap.md)) — **superseded by D-uvx** | R |
 | D-uvx | done ✅  | Switch launcher to `uvx --from ${PLUGIN_ROOT} np-agent-memory`: hatchling packaging, entry point, `cache-keys`; remove `bootstrap.py`/`requirements*.txt`; cross-platform now solved ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0004](decisions/0004-launcher-via-uvx.md)) | D |
 | D-linux | done ✅ | Cross-platform launcher — **resolved by D-uvx** (`uvx` is the single command on Windows/Linux/macOS; uv provisions Python). PyPI/`uvx np-agent-memory` remains a post-1.0 option | D-uvx |
+| E1 | todo 📋 | Allow editing a todo's title in `todo_update` (add optional `title` param + validation + tests in `tools/todos.py`) | 4 |
 
 > **Phases 9–12 are cross-system handoffs** (files outside this repo). They are
 > **cancelled in this repo's tracking** — they are not the implementing agent's
