@@ -1,7 +1,7 @@
 {
   "name": "np-agent-memory",
   "description": "Shared, persistent memory + cross-agent inbox + handover transport for every Copilot CLI agent on your machine. Backed by a single SQLite database under $HOME/.copilot/np-agent-memory/.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": {
     "name": "Nick Polyderopoulos"
   },

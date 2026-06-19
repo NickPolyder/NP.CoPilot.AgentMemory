@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "np-agent-memory"
-version = "0.6.0"
+version = "0.7.0"
 description = "Shared SQLite-backed memory + cross-agent inbox for Copilot CLI agents."
 readme = "README.md"
 license = { file = "LICENSE" }
