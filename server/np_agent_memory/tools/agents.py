@@ -29,7 +29,14 @@ from np_agent_memory.identity import (
     new_ulid,
     now_iso,
 )
-from np_agent_memory.tools._common import resolve_agent_id
+from np_agent_memory.tools._common import (
+    clamp_limit,
+    decode_cursor,
+    encode_cursor,
+    keyset_predicate,
+    resolve_agent_id,
+    truncate,
+)
 
 # Todo statuses that count as "still open" for the describe summary.
 _OPEN_TODO_STATUSES = ("pending", "in_progress", "blocked")
@@ -41,6 +48,10 @@ _ACTIVE_BLOCKER_STATUSES = ("active", "escalated")
 _MAX_NAME_LEN = 128
 _MAX_WORKSTREAM_LEN = 128
 _MAX_DESCRIPTION_LEN = 4096
+# Preview length for ``description`` in the agent directory listing. The full
+# value (up to _MAX_DESCRIPTION_LEN) is only returned when the caller asks for
+# ``full=True``; keeping the list preview short bounds a multi-agent response.
+_DESCRIPTION_PREVIEW_LEN = 280
 
 
 def _validate_metadata(
@@ -262,6 +273,103 @@ def add_alias(
     }
 
 
+def _row_to_agent_summary(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
+    """Project an ``agents`` row to a public summary.
+
+    Never exposes the internal ULID (locked identity decision): callers only see
+    the public handle (``name``/``workstream``), a representative
+    ``canonical_path`` and timestamps. ``description`` is clipped to a preview
+    unless ``full`` is set, with ``description_truncated`` flagging the clip.
+    """
+    description = row["description"]
+    truncated = False
+    if description is not None and not full:
+        description, truncated = truncate(description, _DESCRIPTION_PREVIEW_LEN)
+    return {
+        "name": row["name"],
+        "workstream": row["workstream"],
+        "description": description,
+        "description_truncated": truncated,
+        "canonical_path": row["canonical_path"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_agents(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    cursor: str | None = None,
+    workstream: str | None = None,
+    full: bool = False,
+) -> dict[str, Any]:
+    """Return a keyset-paginated directory of all registered agents.
+
+    Global, read-only discovery: unlike the other agent tools this is *not*
+    scoped to a single caller, so it needs no ``agent_cwd`` — it lists every
+    registered agent so one agent can find peers to address with ``inbox_send``.
+    Each row carries the public handle and a representative ``canonical_path``
+    (the agent's earliest-registered alias). The internal ULID is never selected
+    or returned, including inside the opaque pagination cursor (hard rule:
+    agents never see internal IDs).
+
+    Newest-first by ``(created_at, canonical_path)`` for a stable keyset window:
+    ``canonical_path`` is an ``agent_aliases`` primary key, so it is globally
+    unique and breaks ``created_at`` ties without exposing the ULID. An optional
+    ``workstream`` applies an exact-match filter.
+    """
+    limit = clamp_limit(limit)
+    if workstream is not None and not isinstance(workstream, str):
+        raise ValueError("workstream filter must be a string.")
+    cursor_key = decode_cursor(cursor) if cursor else None
+    if cursor_key is not None and len(cursor_key) != 2:
+        raise ValueError("invalid cursor for agent list.")
+
+    def _work(c: sqlite3.Connection) -> list[sqlite3.Row]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if workstream is not None:
+            clauses.append("workstream = ?")
+            params.append(workstream)
+        if cursor_key is not None:
+            frag, frag_params = keyset_predicate(
+                [("created_at", cursor_key[0]), ("canonical_path", cursor_key[1])],
+                direction="<",
+            )
+            clauses.append(frag)
+            params.extend(frag_params)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        params.append(limit + 1)
+        # The ULID (agents.id) is used only inside the correlated subquery to
+        # resolve the representative alias; it is never SELECTed into the outer
+        # result, so it cannot reach the projection or the cursor.
+        return c.execute(
+            "SELECT name, workstream, description, created_at, updated_at, "
+            "canonical_path FROM ("
+            "  SELECT name, workstream, description, created_at, updated_at, "
+            "    (SELECT alias_path FROM agent_aliases "
+            "       WHERE agent_id = agents.id "
+            "       ORDER BY created_at ASC, alias_path ASC LIMIT 1) "
+            "      AS canonical_path "
+            "  FROM agents"
+            f") {where}"
+            "ORDER BY created_at DESC, canonical_path DESC LIMIT ?",
+            params,
+        ).fetchall()
+
+    rows = run_in_read_txn(conn, _work)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    agents = [_row_to_agent_summary(row, full=full) for row in rows]
+    next_cursor = (
+        encode_cursor([rows[-1]["created_at"], rows[-1]["canonical_path"]])
+        if has_more and rows
+        else None
+    )
+    return {"agents": agents, "count": len(agents), "next_cursor": next_cursor}
+
+
 def register_agent_tools(mcp: FastMCP) -> None:
     """Register the agent-identity tools on the FastMCP server."""
 
@@ -349,3 +457,44 @@ def register_agent_tools(mcp: FastMCP) -> None:
         """
         with open_connection() as conn:
             return add_alias(conn, agent_cwd=agent_cwd, new_cwd=new_cwd)
+
+    @mcp.tool()
+    def agent_list(
+        limit: int,
+        cursor: str | None = None,
+        workstream: str | None = None,
+        full: bool = False,
+    ) -> dict[str, Any]:
+        """List registered agents (a global directory for discovery).
+
+        Use this to find peers to coordinate with — e.g. before ``inbox_send``
+        when you know a workstream but not the exact agent name. Unlike the other
+        agent tools this is NOT scoped to you and takes no ``agent_cwd``; it
+        returns every registered agent, newest first. Internal IDs are never
+        exposed.
+
+        Results are keyset-paginated: each call returns at most ``limit`` agents
+        (server-capped) plus ``next_cursor``; pass it back as ``cursor`` to page.
+        ``description`` is truncated to a preview unless ``full=True``
+        (``description_truncated`` flags clipped previews).
+
+        Args:
+            limit: Max agents to return this page (>= 1; capped server-side).
+            cursor: Opaque token from a previous call's ``next_cursor``.
+            workstream: Optional exact-match filter on the workstream label.
+            full: Return untruncated ``description`` when true.
+
+        Returns:
+            ``agents`` (each with ``name``, ``workstream``, ``description``,
+            ``description_truncated``, ``canonical_path``, ``created_at`` and
+            ``updated_at``), ``count`` and ``next_cursor`` (null when there is no
+            further page).
+        """
+        with open_connection() as conn:
+            return list_agents(
+                conn,
+                limit=limit,
+                cursor=cursor,
+                workstream=workstream,
+                full=full,
+            )

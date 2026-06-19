@@ -18,7 +18,12 @@ from np_agent_memory.identity import (
 )
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools import register_all_tools
-from np_agent_memory.tools.agents import add_alias, describe_agent, register_agent
+from np_agent_memory.tools.agents import (
+    add_alias,
+    describe_agent,
+    list_agents,
+    register_agent,
+)
 
 
 @pytest.fixture
@@ -511,6 +516,161 @@ class TestAddAlias:
 
 
 # ---------------------------------------------------------------------------
+# list_agents
+# ---------------------------------------------------------------------------
+
+
+class TestListAgents:
+    def _register(
+        self,
+        conn: sqlite3.Connection,
+        tmp_path: Path,
+        name: str,
+        **kwargs: object,
+    ) -> str:
+        repo = tmp_path / name
+        repo.mkdir()
+        register_agent(conn, name=name, agent_cwd=str(repo), **kwargs)
+        return str(repo)
+
+    def test_empty_directory(self, db_conn: sqlite3.Connection) -> None:
+        result = list_agents(db_conn, limit=20)
+        assert result == {"agents": [], "count": 0, "next_cursor": None}
+
+    def test_lists_all_registered_agents(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        self._register(db_conn, tmp_path, "a")
+        self._register(db_conn, tmp_path, "b")
+        self._register(db_conn, tmp_path, "c")
+
+        result = list_agents(db_conn, limit=20)
+        assert result["count"] == 3
+        assert {a["name"] for a in result["agents"]} == {"a", "b", "c"}
+        assert result["next_cursor"] is None
+
+    def test_no_internal_id_leaked(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        self._register(db_conn, tmp_path, "a")
+        agent = list_agents(db_conn, limit=20)["agents"][0]
+        assert "id" not in agent
+        assert "agent_id" not in agent
+        assert "\\" not in agent["canonical_path"]
+
+    def test_cursor_does_not_leak_internal_ulid(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        # The opaque next_cursor is only base64-encoded, not encrypted. The hard
+        # rule "agents never see internal IDs" must hold for the cursor too, so
+        # its decoded ordering key must carry no agents.id ULID.
+        from np_agent_memory.tools._common import decode_cursor
+
+        ids: set[str] = set()
+        for name in ("a", "b", "c"):
+            path = self._register(db_conn, tmp_path, name)
+            ids.add(_agent_id_for(db_conn, canonicalize_agent_cwd(path)))
+
+        page = list_agents(db_conn, limit=2)
+        assert page["next_cursor"] is not None
+        key = decode_cursor(page["next_cursor"])
+        assert len(key) == 2  # (created_at, canonical_path)
+        assert not (set(map(str, key)) & ids)
+
+    def test_newest_first_ordering(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        with patch(
+            "np_agent_memory.tools.agents.now_iso",
+            side_effect=[
+                "2026-01-01T00:00:00+00:00",  # a
+                "2026-01-02T00:00:00+00:00",  # b
+                "2026-01-03T00:00:00+00:00",  # c
+            ],
+        ):
+            self._register(db_conn, tmp_path, "a")
+            self._register(db_conn, tmp_path, "b")
+            self._register(db_conn, tmp_path, "c")
+
+        names = [a["name"] for a in list_agents(db_conn, limit=20)["agents"]]
+        assert names == ["c", "b", "a"]
+
+    def test_pagination_covers_all_without_duplicates(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        for name in ("a", "b", "c", "d", "e"):
+            self._register(db_conn, tmp_path, name)
+
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):  # generous bound; should finish in 3 pages
+            page = list_agents(db_conn, limit=2, cursor=cursor)
+            assert len(page["agents"]) <= 2
+            seen.extend(a["name"] for a in page["agents"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+
+        assert cursor is None
+        assert sorted(seen) == ["a", "b", "c", "d", "e"]
+        assert len(seen) == len(set(seen))
+
+    def test_limit_is_capped(self, db_conn: sqlite3.Connection, tmp_path: Path) -> None:
+        from np_agent_memory.tools._common import MAX_LIMIT
+
+        with patch("np_agent_memory.tools.agents.clamp_limit") as clamp:
+            clamp.return_value = MAX_LIMIT
+            list_agents(db_conn, limit=10_000)
+        clamp.assert_called_once_with(10_000)
+
+    def test_rejects_non_positive_limit(self, db_conn: sqlite3.Connection) -> None:
+        with pytest.raises(ValueError, match="limit must be"):
+            list_agents(db_conn, limit=0)
+
+    def test_workstream_filter_is_exact_match(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        self._register(db_conn, tmp_path, "a", workstream="np")
+        self._register(db_conn, tmp_path, "b", workstream="np")
+        self._register(db_conn, tmp_path, "c", workstream="other")
+
+        result = list_agents(db_conn, limit=20, workstream="np")
+        assert {a["name"] for a in result["agents"]} == {"a", "b"}
+
+    def test_description_truncated_by_default(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        long = "x" * 400
+        self._register(db_conn, tmp_path, "a", description=long)
+
+        agent = list_agents(db_conn, limit=20)["agents"][0]
+        assert agent["description_truncated"] is True
+        assert len(agent["description"]) == 280
+
+    def test_full_returns_untruncated_description(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        long = "x" * 400
+        self._register(db_conn, tmp_path, "a", description=long)
+
+        agent = list_agents(db_conn, limit=20, full=True)["agents"][0]
+        assert agent["description_truncated"] is False
+        assert agent["description"] == long
+
+    def test_null_description_is_not_flagged_truncated(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        self._register(db_conn, tmp_path, "a")
+        agent = list_agents(db_conn, limit=20)["agents"][0]
+        assert agent["description"] is None
+        assert agent["description_truncated"] is False
+
+    def test_invalid_cursor_raises(self, db_conn: sqlite3.Connection) -> None:
+        with pytest.raises(ValueError, match="invalid cursor"):
+            list_agents(db_conn, limit=20, cursor="!!!not-base64!!!")
+
+
+# ---------------------------------------------------------------------------
 # tool registration wiring
 # ---------------------------------------------------------------------------
 
@@ -525,7 +685,12 @@ class TestToolRegistration:
 
         tools = anyio.run(probe.list_tools)
         names = {t.name for t in tools}
-        assert {"agent_register", "agent_describe", "agent_add_alias"} <= names
+        assert {
+            "agent_register",
+            "agent_describe",
+            "agent_add_alias",
+            "agent_list",
+        } <= names
         assert {"memory_log", "memory_query", "memory_export"} <= names
         assert {"todo_add", "todo_list", "todo_update"} <= names
         assert {"blocker_open", "blocker_list", "blocker_resolve"} <= names

@@ -20,13 +20,14 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | 8  | done ✅      | Bundled skill `skills/agent-memory/SKILL.md`                       | 4, 5, 6    |
 | 9  | cancelled 🚫 | Rewrite Connects `ingest-handovers` skill (claim/ack model + `source_*` columns + uniqueness) — **handoff: owned by the Connects agent, not this repo's implementing agent** | 5 |
 | 10 | cancelled 🚫 | Rewrite global `handover-report` skill (dual-write transition, then `handover_save` only) — **handoff: owned by the global-skills owner, not this repo's implementing agent** | 5 |
-| 11 | cancelled 🚫 | Update each workstream's `copilot-instructions.md` with a "Use agent-memory" section — **handoff: owned by each workstream's agent, not this repo's implementing agent** | 8 |
+| 11 | cancelled 🚫 | Ship a global instruction template (`templates/agent-memory-usage.instructions.md`) installed once at `~/.copilot/instructions/` so every repo opts into agent-memory by default — **machine/user config; the one-time copy into `~/.copilot/` is a user action** | 8 |
 | 12 | cancelled 🚫 | Optional one-time backfill of historical handover markdown files — **handoff: owned by the global-skills owner, not this repo's implementing agent** | 10 |
 | R  | done ✅      | Address full-review findings R1–R8 (see [`reviews/2026-06-10-full-review.md`](reviews/2026-06-10-full-review.md)) | 8 |
 | D  | done ✅      | Public distribution: self-bootstrapping launcher + manifest/license/docs hardening ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0003](decisions/0003-public-distribution-bootstrap.md)) — **superseded by D-uvx** | R |
 | D-uvx | done ✅  | Switch launcher to `uvx --from ${PLUGIN_ROOT} np-agent-memory`: hatchling packaging, entry point, `cache-keys`; remove `bootstrap.py`/`requirements*.txt`; cross-platform now solved ([`features/public-distribution.md`](features/public-distribution.md), [ADR 0004](decisions/0004-launcher-via-uvx.md)) | D |
 | D-linux | done ✅ | Cross-platform launcher — **resolved by D-uvx** (`uvx` is the single command on Windows/Linux/macOS; uv provisions Python). PyPI/`uvx np-agent-memory` remains a post-1.0 option | D-uvx |
 | E1 | done ✅ | Allow editing a todo's title in `todo_update` (add optional `title` param + validation + tests in `tools/todos.py`) | 4 |
+| E2 | done ✅ | Add `agent_list` — global, keyset-paginated directory of registered agents (public handles only, optional `workstream` filter, truncated `description` + `full`) for peer discovery before `inbox_send`, in `tools/agents.py` | 3 |
 
 > **Phases 9–12 are cross-system handoffs** (files outside this repo). They are
 > **cancelled in this repo's tracking** — they are not the implementing agent's

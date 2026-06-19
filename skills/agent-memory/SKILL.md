@@ -108,6 +108,7 @@ truncated — pass `full=true` to get the untruncated value.
 | `agent_register(agent_cwd, name?, workstream?, description?)` | Register/refresh you for this repo root. Idempotent. `name` defaults to the directory name on first call; omit it later to keep the stored name. |
 | `agent_describe(agent_cwd)` | Your metadata + counts of open todos, active blockers, unread messages. |
 | `agent_add_alias(agent_cwd, new_cwd)` | Attach a second path to the same identity (work-tree, moved repo). |
+| `agent_list(limit, cursor?, workstream?, full?)` | **Global** directory of all registered agents (no `agent_cwd`) — find peers to address with `inbox_send`. Newest first; `description` truncated unless `full=true`; optional exact-match `workstream` filter. |
 
 ## Memory (append-only timeline)
 
