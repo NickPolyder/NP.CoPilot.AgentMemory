@@ -22,6 +22,15 @@
     so a broken install must be loud at install time, not silent at runtime.
 #>
 
+param(
+    # When set, also copy templates\agent-memory-usage.instructions.md into
+    # ~/.copilot/instructions/ so every repo opts into agent-memory by default.
+    # Idempotent: skips an existing identical file; use -Force to overwrite a
+    # divergent one.
+    [switch]$InstallGlobalInstruction,
+    [switch]$Force
+)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -181,6 +190,44 @@ try {
     throw "self-verify produced unexpected output (could not parse last line as JSON):`n$selfCheckOutput"
 }
 
+# --- 4b. Optional: install the global agent-memory instruction -------------
+# Copies the versioned template into ~/.copilot/instructions/ so every repo
+# opts into agent-memory by default (see docs/handoffs/phase-11-*). The copy is
+# a user/machine action, gated behind -InstallGlobalInstruction; runtime never
+# depends on it.
+
+if ($InstallGlobalInstruction) {
+    $templateFile = Join-Path $pluginRoot 'templates\agent-memory-usage.instructions.md'
+    if (-not (Test-Path -LiteralPath $templateFile)) {
+        throw "Template not found: $templateFile"
+    }
+
+    $instructionsDir = Join-Path $HOME '.copilot\instructions'
+    $targetFile      = Join-Path $instructionsDir 'agent-memory-usage.instructions.md'
+
+    if (-not (Test-Path -LiteralPath $instructionsDir)) {
+        New-Item -ItemType Directory -Path $instructionsDir -Force | Out-Null
+    }
+
+    if (Test-Path -LiteralPath $targetFile) {
+        $sourceHash = (Get-FileHash -LiteralPath $templateFile).Hash
+        $targetHash = (Get-FileHash -LiteralPath $targetFile).Hash
+        if ($sourceHash -eq $targetHash) {
+            Write-Host "✅ Global instruction already up to date: $targetFile"
+        } elseif ($Force) {
+            Copy-Item -LiteralPath $templateFile -Destination $targetFile -Force
+            Write-Host "♻  Global instruction overwritten (-Force): $targetFile"
+        } else {
+            Write-Host "⚠  Global instruction exists and differs from the template:"
+            Write-Host "     $targetFile"
+            Write-Host "   Re-run with -Force to overwrite it."
+        }
+    } else {
+        Copy-Item -LiteralPath $templateFile -Destination $targetFile
+        Write-Host "✅ Installed global instruction: $targetFile"
+    }
+}
+
 # --- 5. Next steps ---------------------------------------------------------
 
 Write-Host ''
@@ -195,3 +242,9 @@ Write-Host "  1) Restart Copilot CLI."
 Write-Host "  2) /plugin marketplace add `"$pluginRoot`""
 Write-Host "  3) /plugin install np-agent-memory@np-agent-memory-marketplace"
 Write-Host "  4) Restart again, then call the np-agent-memory-memory_alive tool to confirm."
+
+if (-not $InstallGlobalInstruction) {
+    Write-Host ''
+    Write-Host "Tip: re-run with -InstallGlobalInstruction to install the global"
+    Write-Host "  'use agent-memory' instruction into ~/.copilot/instructions/."
+}

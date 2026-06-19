@@ -459,8 +459,10 @@ Phases are roughly dependency-ordered; several can run in parallel.
 9. **Connects ingest rewrite** — switch to `handover_claim` + `handover_ack`;
    add `source_*` columns + uniqueness constraints to `data/progress.db`.
 10. **Rewrite global `handover-report` skill** to call `handover_save`.
-11. **Agent instructions update** — each workstream's `copilot-instructions.md`
-    gets a "Use agent-memory" section. Mostly per-repo doc edits.
+11. **Agent instructions update** — install one global instruction at
+    `~/.copilot/instructions/agent-memory-usage.instructions.md` (shipped as a
+    versioned repo template) so every repo opts into agent-memory by default,
+    instead of per-repo `copilot-instructions.md` edits.
 12. **Optional backfill** — script to import existing handover markdown in
     `follow-ups\handovers\processed\` into `handovers` + derived `notes`.
 

@@ -9,7 +9,7 @@ the task and it carries all the context that agent needs.
 |-------|--------|----------------------|------------|
 | 9  | [`phase-09-connects-ingest-rewrite.md`](phase-09-connects-ingest-rewrite.md) | **Connects agent** (`C:\path\to\Connects`) | Phase 5 ✅ |
 | 10 | [`phase-10-handover-report-skill-rewrite.md`](phase-10-handover-report-skill-rewrite.md) | Whoever owns the **global skills** (`~/.copilot/skills/`) | Phase 5 ✅ |
-| 11 | [`phase-11-workstream-instructions-update.md`](phase-11-workstream-instructions-update.md) | **Each workstream agent** (per-repo) | Phase 8 ✅ |
+| 11 | [`phase-11-workstream-instructions-update.md`](phase-11-workstream-instructions-update.md) | **User / machine config** (one global instruction) | Phase 8 ✅ |
 | 12 | [`phase-12-handover-backfill.md`](phase-12-handover-backfill.md) | **Connects agent** (or ops) | Phase 10 |
 
 All tools below are namespaced in the CLI as `np-agent-memory-<tool>` (e.g.
