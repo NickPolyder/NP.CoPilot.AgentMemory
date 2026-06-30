@@ -233,9 +233,7 @@ class TestUpdateTodo:
         with pytest.raises(ValueError, match="status"):
             update_todo(db_conn, agent_cwd=agent_cwd, todo_id=t["id"], status="bogus")
 
-    def test_updates_title(
-        self, db_conn: sqlite3.Connection, agent_cwd: str
-    ) -> None:
+    def test_updates_title(self, db_conn: sqlite3.Connection, agent_cwd: str) -> None:
         t = add_todo(db_conn, agent_cwd=agent_cwd, title="old title")
         out = update_todo(
             db_conn, agent_cwd=agent_cwd, todo_id=t["id"], title="new title"
@@ -261,6 +259,4 @@ class TestUpdateTodo:
     ) -> None:
         t = add_todo(db_conn, agent_cwd=agent_cwd, title="x")
         with pytest.raises(ValueError, match="title is too long"):
-            update_todo(
-                db_conn, agent_cwd=agent_cwd, todo_id=t["id"], title="a" * 257
-            )
+            update_todo(db_conn, agent_cwd=agent_cwd, todo_id=t["id"], title="a" * 257)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import time
@@ -438,7 +439,7 @@ class TestRunMigrations:
         conn = sqlite3.connect(str(db_path))
         try:
             count = conn.execute("SELECT COUNT(*) FROM migrations").fetchone()[0]
-            assert count == 1
+            assert count == len(_discover_migrations())
         finally:
             conn.close()
 
@@ -668,7 +669,7 @@ class TestConcurrentMigrations:
         conn = sqlite3.connect(str(db_path))
         try:
             count = conn.execute("SELECT COUNT(*) FROM migrations").fetchone()[0]
-            assert count == 1
+            assert count == len(_discover_migrations())
 
             # Schema should be intact
             tables = {
@@ -735,7 +736,7 @@ class TestConcurrentMigrations:
         conn = sqlite3.connect(str(db_path))
         try:
             count = conn.execute("SELECT COUNT(*) FROM migrations").fetchone()[0]
-            assert count == 1
+            assert count == len(_discover_migrations())
         finally:
             conn.close()
 
@@ -788,7 +789,7 @@ class TestConcurrentMigrations:
         conn = sqlite3.connect(str(db_path))
         try:
             count = conn.execute("SELECT COUNT(*) FROM migrations").fetchone()[0]
-            assert count == 1
+            assert count == len(_discover_migrations())
         finally:
             conn.close()
 
@@ -889,7 +890,9 @@ class TestMigrationErrorPaths:
 
         conn = sqlite3.connect(str(db_path))
         try:
-            assert conn.execute("select count(*) from migrations").fetchone()[0] == 1
+            assert conn.execute("select count(*) from migrations").fetchone()[0] == len(
+                _discover_migrations()
+            )
         finally:
             conn.close()
 
@@ -1046,3 +1049,43 @@ class TestMigrationErrorPaths:
         monkeypatch.setattr("np_agent_memory.migrations._MIGRATIONS_DIR", mig_dir)
         with pytest.raises(RuntimeError, match="Duplicate migration version"):
             _discover_migrations()
+
+
+class TestEnumSchemaMatchesSqlChecks:
+    """The Literal-derived runtime tuples are the single source of truth for the
+    JSON-schema enums; they MUST stay byte-identical to the SQL CHECK constraints
+    so the Python and database validation can never silently diverge.
+    """
+
+    @staticmethod
+    def _all_check_values(sql: str, column: str) -> list[tuple[str, ...]]:
+        """All value sets from every ``check (<column> in (...))`` clause.
+
+        A column name like ``status`` / ``priority`` appears on more than one
+        table, so return every match rather than just the first.
+        """
+        matches = re.findall(
+            rf"check\s*\(\s*{re.escape(column)}\s+in\s*\(([^)]*)\)\s*\)",
+            sql,
+            re.IGNORECASE,
+        )
+        assert matches, f"no CHECK constraint found for column {column!r}"
+        return [
+            tuple(value.strip().strip("'") for value in group.split(","))
+            for group in matches
+        ]
+
+    def test_literals_match_check_constraints(self) -> None:
+        from np_agent_memory.tools import blockers, inbox, memory, todos
+
+        init_sql = _discover_migrations()[0][1].read_text(encoding="utf-8")
+
+        assert self._all_check_values(init_sql, "category") == [memory._CATEGORIES]
+        # status / priority each appear on multiple tables — assert each Literal
+        # is byte-identical to one of the SQL CHECK value sets for that column.
+        statuses = self._all_check_values(init_sql, "status")
+        assert todos._STATUSES in statuses
+        assert blockers._STATUSES in statuses
+        priorities = self._all_check_values(init_sql, "priority")
+        assert todos._PRIORITIES in priorities
+        assert inbox._PRIORITIES in priorities

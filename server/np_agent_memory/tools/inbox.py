@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import Annotated, Any, Literal, get_args
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
@@ -26,8 +27,12 @@ from np_agent_memory.tools._common import (
     truncate,
 )
 
-_PRIORITIES = ("low", "normal", "high", "urgent")
-_ACK_STATUSES = ("read", "acked")
+# The Literals feed the JSON-schema enums; the derived tuples feed runtime
+# validation (priority mirrors inbox.priority; ack status is read vs acked).
+_PriorityLiteral = Literal["low", "normal", "high", "urgent"]
+_AckStatusLiteral = Literal["read", "acked"]
+_PRIORITIES = get_args(_PriorityLiteral)
+_ACK_STATUSES = get_args(_AckStatusLiteral)
 
 _MAX_SUBJECT_LEN = 256
 _MAX_BODY_LEN = 65_536
@@ -266,12 +271,27 @@ def register_inbox_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def inbox_send(
-        agent_cwd: str,
-        to: str,
-        subject: str,
-        body: str,
-        priority: str = "normal",
-        metadata: dict[str, Any] | None = None,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        to: Annotated[
+            str, Field(description="Recipient canonical path or unique agent name.")
+        ],
+        subject: Annotated[
+            str, Field(description="Short message subject (non-empty).")
+        ],
+        body: Annotated[str, Field(description="Message body (non-empty).")],
+        priority: Annotated[
+            _PriorityLiteral,
+            Field(description='Priority — "low", "normal", "high", or "urgent".'),
+        ] = "normal",
+        metadata: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="Optional JSON object (not a string) of structured extras."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Send an inbox message to another registered agent.
 
@@ -331,9 +351,18 @@ def register_inbox_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def inbox_ack(
-        agent_cwd: str,
-        message_ids: list[str],
-        status: str = "acked",
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        message_ids: Annotated[
+            list[str],
+            Field(description="Non-empty list of message ids to update."),
+        ],
+        status: Annotated[
+            _AckStatusLiteral,
+            Field(description='"read" (mark seen) or "acked" (archive; default).'),
+        ] = "acked",
     ) -> dict[str, Any]:
         """Mark your inbox messages as read or acknowledged/archived.
 

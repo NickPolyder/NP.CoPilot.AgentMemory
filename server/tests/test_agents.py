@@ -691,7 +691,13 @@ class TestToolRegistration:
             "agent_add_alias",
             "agent_list",
         } <= names
-        assert {"memory_log", "memory_query", "memory_export"} <= names
+        assert {
+            "memory_log",
+            "memory_query",
+            "memory_export",
+            "memory_delete",
+            "memory_restore",
+        } <= names
         assert {"todo_add", "todo_list", "todo_update"} <= names
         assert {"blocker_open", "blocker_list", "blocker_resolve"} <= names
         assert {
@@ -704,3 +710,56 @@ class TestToolRegistration:
         } <= names
         assert {"inbox_send", "inbox_check", "inbox_ack"} <= names
         assert "memory_backup_now" in names
+
+    def test_enum_params_publish_json_schema_enums_and_descriptions(self) -> None:
+        """Enum/confusable params must reach the client schema so agents pick
+        valid values (and the right field) on the *first* call — not by failing
+        and reading the error. Regression for the "first call always fails" bug.
+        """
+        from mcp.server.fastmcp import FastMCP
+
+        probe = FastMCP(name="probe")
+        register_all_tools(probe)
+        import anyio
+
+        schemas = {t.name: t.inputSchema for t in anyio.run(probe.list_tools)}
+
+        def prop(tool: str, name: str) -> dict:
+            return schemas[tool]["properties"][name]
+
+        def enum_of(tool: str, name: str) -> list | None:
+            p = prop(tool, name)
+            if "enum" in p:
+                return p["enum"]
+            # optional (nullable) params surface the enum inside an anyOf branch.
+            for branch in p.get("anyOf", []):
+                if "enum" in branch:
+                    return branch["enum"]
+            return None
+
+        # Required enum is published so the model cannot guess an invalid value.
+        assert enum_of("memory_log", "category") == ["progress", "decision", "note"]
+        assert enum_of("memory_query", "category") == ["progress", "decision", "note"]
+        assert enum_of("todo_add", "priority") == ["low", "normal", "high", "urgent"]
+        assert enum_of("todo_list", "status") == [
+            "pending",
+            "in_progress",
+            "done",
+            "blocked",
+            "cancelled",
+        ]
+        assert enum_of("todo_list", "sort") == ["recent", "priority"]
+        assert enum_of("blocker_list", "status") == ["active", "escalated", "resolved"]
+        assert enum_of("inbox_send", "priority") == ["low", "normal", "high", "urgent"]
+        assert enum_of("inbox_ack", "status") == ["read", "acked"]
+
+        # Confusable required text fields carry a description so agents send the
+        # right field (content vs summary vs body_md) the first time.
+        assert prop("memory_log", "content").get("description")
+        assert prop("handover_save", "summary").get("description")
+        assert prop("handover_save", "body_md").get("description")
+        assert schemas["handover_save"]["required"] == [
+            "agent_cwd",
+            "summary",
+            "body_md",
+        ]

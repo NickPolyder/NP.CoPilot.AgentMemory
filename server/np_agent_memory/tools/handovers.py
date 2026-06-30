@@ -21,9 +21,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
@@ -341,11 +342,39 @@ def register_handover_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def handover_save(
-        agent_cwd: str,
-        summary: str,
-        body_md: str,
-        session_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        summary: Annotated[
+            str,
+            Field(
+                description=(
+                    "REQUIRED one-line summary of the session (a short headline, "
+                    "not the full body). Non-empty."
+                )
+            ),
+        ],
+        body_md: Annotated[
+            str,
+            Field(
+                description=(
+                    "REQUIRED full structured handover body, in markdown. This is "
+                    "the long field (named body_md, not 'content' or 'body'). "
+                    "Non-empty."
+                )
+            ),
+        ],
+        session_id: Annotated[
+            str | None,
+            Field(description="Optional id of the session being handed over."),
+        ] = None,
+        metadata: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="Optional JSON object (not a string) of structured extras."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Save a full session handover (replaces writing a markdown file).
 

@@ -10,9 +10,10 @@ idempotency key, unique per agent.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Annotated, Any, Literal, get_args
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
@@ -25,8 +26,10 @@ from np_agent_memory.tools._common import (
     truncate,
 )
 
-# Mirrors the CHECK constraint on blockers.status.
-_STATUSES = ("active", "escalated", "resolved")
+# Mirrors the CHECK constraint on blockers.status. The Literal feeds the
+# JSON-schema enum; the derived tuple feeds runtime validation.
+_StatusLiteral = Literal["active", "escalated", "resolved"]
+_STATUSES = get_args(_StatusLiteral)
 
 _MAX_TITLE_LEN = 256
 _MAX_DESCRIPTION_LEN = 8_192
@@ -291,12 +294,29 @@ def register_blocker_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def blocker_list(
-        agent_cwd: str,
-        limit: int,
-        status: str | None = None,
-        workstream: str | None = None,
-        cursor: str | None = None,
-        full: bool = False,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        limit: Annotated[
+            int, Field(description="Max blockers to return (server-capped at 200).")
+        ],
+        status: Annotated[
+            _StatusLiteral | None,
+            Field(
+                description='Optional filter — "active", "escalated", or "resolved".'
+            ),
+        ] = None,
+        workstream: Annotated[
+            str | None, Field(description="Optional exact-workstream filter.")
+        ] = None,
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque token from a previous call's next_cursor."),
+        ] = None,
+        full: Annotated[
+            bool, Field(description="Return untruncated description when true.")
+        ] = False,
     ) -> dict[str, Any]:
         """List your blockers, newest first, with keyset pagination.
 

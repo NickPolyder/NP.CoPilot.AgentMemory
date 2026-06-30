@@ -10,7 +10,13 @@ import pytest
 from np_agent_memory.db import open_connection
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools.agents import register_agent
-from np_agent_memory.tools.memory import export_memory, log_memory, query_memory
+from np_agent_memory.tools.memory import (
+    delete_notes,
+    export_memory,
+    log_memory,
+    query_memory,
+    restore_notes,
+)
 
 
 @pytest.fixture
@@ -226,3 +232,210 @@ class TestExportMemory:
         joined = "\n".join(rendered)
         for i in range(5):
             assert f"c-{i}" in joined
+
+
+class TestDeleteNotes:
+    def _two_notes(self, conn: sqlite3.Connection, cwd: str) -> tuple[str, str]:
+        a = log_memory(conn, agent_cwd=cwd, category="note", content="one")["id"]
+        b = log_memory(conn, agent_cwd=cwd, category="decision", content="two")["id"]
+        return a, b
+
+    def test_soft_delete_hides_from_query_but_keeps_row(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        a, b = self._two_notes(db_conn, agent_cwd)
+        res = delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        assert res["mode"] == "soft"
+        assert res["deleted"] == 1
+        assert res["deleted_ids"] == [a]
+
+        visible = query_memory(db_conn, agent_cwd=agent_cwd, limit=10)
+        assert [n["id"] for n in visible["notes"]] == [b]
+
+    def test_include_deleted_surfaces_soft_deleted(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        a, b = self._two_notes(db_conn, agent_cwd)
+        delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        out = query_memory(db_conn, agent_cwd=agent_cwd, limit=10, include_deleted=True)
+        assert {n["id"] for n in out["notes"]} == {a, b}
+
+    def test_soft_delete_is_default(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        """Omitting ``hard`` must NOT destroy the row — the safe default."""
+        a, _ = self._two_notes(db_conn, agent_cwd)
+        delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        still_there = query_memory(
+            db_conn, agent_cwd=agent_cwd, limit=10, include_deleted=True
+        )
+        assert a in {n["id"] for n in still_there["notes"]}
+
+    def test_soft_delete_idempotent_reports_skipped(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        a, _ = self._two_notes(db_conn, agent_cwd)
+        delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        res = delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        assert res["deleted"] == 0
+        assert res["skipped"] == [a]
+
+    def test_hard_delete_removes_row(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        a, b = self._two_notes(db_conn, agent_cwd)
+        res = delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a], hard=True)
+        assert res["mode"] == "hard"
+        assert res["deleted"] == 1
+        gone = query_memory(
+            db_conn, agent_cwd=agent_cwd, limit=10, include_deleted=True
+        )
+        assert {n["id"] for n in gone["notes"]} == {b}
+
+    def test_cannot_delete_another_agents_note(
+        self, db_conn: sqlite3.Connection, agent_cwd: str, tmp_path: Path
+    ) -> None:
+        other = tmp_path / "other"
+        other.mkdir()
+        register_agent(db_conn, name="other", agent_cwd=str(other))
+        theirs = log_memory(
+            db_conn, agent_cwd=str(other), category="note", content="theirs"
+        )["id"]
+        res = delete_notes(db_conn, agent_cwd=agent_cwd, ids=[theirs])
+        assert res["deleted"] == 0
+        assert res["not_found"] == [theirs]
+        # Their note is untouched.
+        survives = query_memory(db_conn, agent_cwd=str(other), limit=10)
+        assert [n["id"] for n in survives["notes"]] == [theirs]
+
+    def test_empty_ids_raises(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        with pytest.raises(ValueError, match="non-empty list"):
+            delete_notes(db_conn, agent_cwd=agent_cwd, ids=[])
+
+    def test_non_string_ids_raises(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        with pytest.raises(ValueError, match="only strings"):
+            delete_notes(db_conn, agent_cwd=agent_cwd, ids=[123])  # type: ignore[list-item]
+
+    def test_too_many_ids_raises(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        with pytest.raises(ValueError, match="at most"):
+            delete_notes(db_conn, agent_cwd=agent_cwd, ids=["x"] * 201)
+
+    def test_non_bool_hard_raises(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        """A truthy non-bool (e.g. the string "false") must NOT take the
+        irreversible hard path — it is rejected outright."""
+        a, _ = self._two_notes(db_conn, agent_cwd)
+        with pytest.raises(ValueError, match="hard must be a boolean"):
+            delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a], hard="false")  # type: ignore[arg-type]
+        # The note was not touched.
+        assert query_memory(db_conn, agent_cwd=agent_cwd, limit=10)["count"] == 2
+
+    def test_query_exposes_deleted_at_marker(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        a, _ = self._two_notes(db_conn, agent_cwd)
+        live = query_memory(db_conn, agent_cwd=agent_cwd, limit=10)["notes"]
+        assert all("deleted_at" in n for n in live)
+        assert all(n["deleted_at"] is None for n in live)
+
+        delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        with_deleted = query_memory(
+            db_conn, agent_cwd=agent_cwd, limit=10, include_deleted=True
+        )["notes"]
+        marked = {n["id"]: n["deleted_at"] for n in with_deleted}
+        assert marked[a] is not None  # soft-deleted carries a timestamp
+
+
+class TestRestoreNotes:
+    def _soft_deleted_note(self, conn: sqlite3.Connection, cwd: str) -> str:
+        note_id = log_memory(conn, agent_cwd=cwd, category="note", content="x")["id"]
+        delete_notes(conn, agent_cwd=cwd, ids=[note_id])
+        return note_id
+
+    def test_restore_brings_note_back(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        note_id = self._soft_deleted_note(db_conn, agent_cwd)
+        assert query_memory(db_conn, agent_cwd=agent_cwd, limit=10)["count"] == 0
+
+        res = restore_notes(db_conn, agent_cwd=agent_cwd, ids=[note_id])
+        assert res["restored"] == 1
+        assert res["restored_ids"] == [note_id]
+
+        back = query_memory(db_conn, agent_cwd=agent_cwd, limit=10)["notes"]
+        assert [n["id"] for n in back] == [note_id]
+        assert back[0]["deleted_at"] is None
+
+    def test_restore_already_live_is_skipped(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        note_id = log_memory(
+            db_conn, agent_cwd=agent_cwd, category="note", content="live"
+        )["id"]
+        res = restore_notes(db_conn, agent_cwd=agent_cwd, ids=[note_id])
+        assert res["restored"] == 0
+        assert res["skipped"] == [note_id]
+
+    def test_cannot_restore_after_hard_delete(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        note_id = log_memory(
+            db_conn, agent_cwd=agent_cwd, category="note", content="gone"
+        )["id"]
+        delete_notes(db_conn, agent_cwd=agent_cwd, ids=[note_id], hard=True)
+        res = restore_notes(db_conn, agent_cwd=agent_cwd, ids=[note_id])
+        assert res["restored"] == 0
+        assert res["not_found"] == [note_id]
+
+    def test_cannot_restore_another_agents_note(
+        self, db_conn: sqlite3.Connection, agent_cwd: str, tmp_path: Path
+    ) -> None:
+        other = tmp_path / "other"
+        other.mkdir()
+        register_agent(db_conn, name="other", agent_cwd=str(other))
+        theirs = self._soft_deleted_note(db_conn, str(other))
+        res = restore_notes(db_conn, agent_cwd=agent_cwd, ids=[theirs])
+        assert res["restored"] == 0
+        assert res["not_found"] == [theirs]
+        # Still soft-deleted for the owner (not resurrected by the other agent).
+        assert query_memory(db_conn, agent_cwd=str(other), limit=10)["count"] == 0
+
+    def test_empty_ids_raises(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        with pytest.raises(ValueError, match="non-empty list"):
+            restore_notes(db_conn, agent_cwd=agent_cwd, ids=[])
+
+
+class TestMemoryExportDeleted:
+    def test_export_hides_soft_deleted_by_default(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        a = log_memory(db_conn, agent_cwd=agent_cwd, category="note", content="hideme")[
+            "id"
+        ]
+        delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        out = export_memory(db_conn, agent_cwd=agent_cwd, limit=10)
+        assert "hideme" not in out["markdown"]
+        assert out["count"] == 0
+
+    def test_export_include_deleted_shows_marker(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        a = log_memory(db_conn, agent_cwd=agent_cwd, category="note", content="showme")[
+            "id"
+        ]
+        delete_notes(db_conn, agent_cwd=agent_cwd, ids=[a])
+        out = export_memory(
+            db_conn, agent_cwd=agent_cwd, limit=10, include_deleted=True
+        )
+        assert "showme" in out["markdown"]
+        assert "_(deleted)_" in out["markdown"]
+        assert out["count"] == 1

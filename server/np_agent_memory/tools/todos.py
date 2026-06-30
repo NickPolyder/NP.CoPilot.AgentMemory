@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import Annotated, Any, Literal, get_args
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
@@ -25,9 +26,12 @@ from np_agent_memory.tools._common import (
     truncate,
 )
 
-# Mirrors the CHECK constraints on todos.status / todos.priority.
-_STATUSES = ("pending", "in_progress", "done", "blocked", "cancelled")
-_PRIORITIES = ("low", "normal", "high", "urgent")
+# Mirrors the CHECK constraints on todos.status / todos.priority. The Literal
+# feeds the JSON-schema enum; the derived tuple feeds runtime validation.
+_StatusLiteral = Literal["pending", "in_progress", "done", "blocked", "cancelled"]
+_PriorityLiteral = Literal["low", "normal", "high", "urgent"]
+_STATUSES = get_args(_StatusLiteral)
+_PRIORITIES = get_args(_PriorityLiteral)
 
 # Ordinal mapping for ordered listing. The text priority column sorts
 # alphabetically (high < low < normal < urgent), which is meaningless; ordered
@@ -40,7 +44,8 @@ _PRIORITY_RANK_SQL = (
     "WHEN 'high' THEN 2 WHEN 'urgent' THEN 3 ELSE 1 END"
 )
 
-_SORTS = ("recent", "priority")
+_SortLiteral = Literal["recent", "priority"]
+_SORTS = get_args(_SortLiteral)
 
 _MAX_TITLE_LEN = 256
 _MAX_DESCRIPTION_LEN = 8_192
@@ -320,12 +325,29 @@ def register_todo_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def todo_add(
-        agent_cwd: str,
-        title: str,
-        description: str | None = None,
-        priority: str = "normal",
-        due_date: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        title: Annotated[
+            str, Field(description="Short summary of the work (non-empty).")
+        ],
+        description: Annotated[
+            str | None, Field(description="Optional longer detail.")
+        ] = None,
+        priority: Annotated[
+            _PriorityLiteral,
+            Field(description='Priority — "low", "normal", "high", or "urgent".'),
+        ] = "normal",
+        due_date: Annotated[
+            str | None, Field(description="Optional ISO-8601 due date/time.")
+        ] = None,
+        metadata: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="Optional JSON object (not a string) of structured extras."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Create a long-running todo (starts in status "pending").
 
@@ -354,13 +376,42 @@ def register_todo_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def todo_list(
-        agent_cwd: str,
-        limit: int,
-        status: str | None = None,
-        priority: str | None = None,
-        sort: str = "recent",
-        cursor: str | None = None,
-        full: bool = False,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        limit: Annotated[
+            int, Field(description="Max todos to return (server-capped at 200).")
+        ],
+        status: Annotated[
+            _StatusLiteral | None,
+            Field(
+                description=(
+                    "Optional filter — pending/in_progress/done/blocked/cancelled."
+                )
+            ),
+        ] = None,
+        priority: Annotated[
+            _PriorityLiteral | None,
+            Field(description="Optional filter — low/normal/high/urgent."),
+        ] = None,
+        sort: Annotated[
+            _SortLiteral,
+            Field(
+                description='"recent" (default, newest first) or "priority" '
+                "(urgent first)."
+            ),
+        ] = "recent",
+        cursor: Annotated[
+            str | None,
+            Field(
+                description="Opaque token from a previous call's next_cursor "
+                "(must match the same sort)."
+            ),
+        ] = None,
+        full: Annotated[
+            bool, Field(description="Return untruncated description when true.")
+        ] = False,
     ) -> dict[str, Any]:
         """List your todos with keyset pagination.
 
@@ -392,13 +443,33 @@ def register_todo_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def todo_update(
-        agent_cwd: str,
-        todo_id: str,
-        status: str | None = None,
-        priority: str | None = None,
-        due_date: str | None = None,
-        description: str | None = None,
-        title: str | None = None,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        todo_id: Annotated[
+            str, Field(description="The id returned by todo_add / todo_list.")
+        ],
+        status: Annotated[
+            _StatusLiteral | None,
+            Field(
+                description="New status (pending/in_progress/done/blocked/cancelled)."
+            ),
+        ] = None,
+        priority: Annotated[
+            _PriorityLiteral | None,
+            Field(description="New priority (low/normal/high/urgent)."),
+        ] = None,
+        due_date: Annotated[
+            str | None, Field(description="New ISO-8601 due date/time.")
+        ] = None,
+        description: Annotated[
+            str | None, Field(description="New description.")
+        ] = None,
+        title: Annotated[
+            str | None,
+            Field(description="New title (non-empty, non-whitespace)."),
+        ] = None,
     ) -> dict[str, Any]:
         """Update one of your todos. Provide at least one field to change.
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from np_agent_memory.db import open_connection
+from np_agent_memory.migrations import _discover_migrations
 from np_agent_memory.startup import init_db
 
 
@@ -50,7 +51,7 @@ class TestInitDb:
 
         with open_connection(db_path) as conn:
             count = conn.execute("SELECT COUNT(*) FROM migrations").fetchone()[0]
-            assert count == 1
+            assert count == len(_discover_migrations())
             # Schema still intact after second run
             tables = {
                 row[0]

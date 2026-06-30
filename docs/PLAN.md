@@ -339,7 +339,9 @@ CREATE TABLE backup_runs (
 
 **Conceptual model:**
 
-- `notes` is an **append-only event stream**. Categories are minimal:
+- `notes` is an **append-mostly event stream** (notes are not edited in place;
+  retraction is via `memory_delete`, soft by default — see
+  [ADR 0005](decisions/0005-note-soft-delete.md)). Categories are minimal:
   `progress | decision | note`. Things like "I added a blocker" or "I closed a
   todo" generate a `note` row with `related_type='blocker'` / `related_id=…` —
   the stateful object lives in its own table.

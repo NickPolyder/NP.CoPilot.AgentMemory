@@ -110,13 +110,15 @@ truncated — pass `full=true` to get the untruncated value.
 | `agent_add_alias(agent_cwd, new_cwd)` | Attach a second path to the same identity (work-tree, moved repo). |
 | `agent_list(limit, cursor?, workstream?, full?)` | **Global** directory of all registered agents (no `agent_cwd`) — find peers to address with `inbox_send`. Newest first; `description` truncated unless `full=true`; optional exact-match `workstream` filter. |
 
-## Memory (append-only timeline)
+## Memory (durable timeline)
 
 | Tool | What it does |
 |------|--------------|
 | `memory_log(agent_cwd, category, content, topic?, related_type?, related_id?, session_id?, metadata?)` | Append one note. `category` ∈ `progress` / `decision` / `note`. |
-| `memory_query(agent_cwd, limit, category?, topic?, since?, cursor?, full?)` | List notes newest-first, with filters + keyset pagination. |
-| `memory_export(agent_cwd, limit, category?, topic?, since?, cursor?)` | Render a window of notes as markdown (grouped day → category) for human reading. |
+| `memory_query(agent_cwd, limit, category?, topic?, since?, cursor?, full?, include_deleted?)` | List notes newest-first, with filters + keyset pagination. Soft-deleted notes are hidden unless `include_deleted=true`. |
+| `memory_export(agent_cwd, limit, category?, topic?, since?, cursor?, include_deleted?)` | Render a window of notes as markdown (grouped day → category) for human reading. Soft-deleted notes are omitted unless `include_deleted=true` (then marked _(deleted)_). |
+| `memory_delete(agent_cwd, ids, hard?)` | Delete your own notes. **Soft by default** (`hard=false`): reversible, hides them from query/export but keeps the row — undo with `memory_restore`. `hard=true` is **permanent and irreversible** — only pass it after the user has explicitly confirmed they want the notes destroyed. |
+| `memory_restore(agent_cwd, ids)` | Undo a **soft** delete — clears `deleted_at` so the notes reappear. Cannot recover hard-deleted notes. |
 
 ## Todos (work that outlives a session)
 
@@ -172,8 +174,10 @@ crash-safe claim → ack protocol:
 
 # What to log — and what to skip
 
-The `notes` stream is **append-only**. Keep it high-signal so future-you can
-skim it. Pick the category by intent:
+The `notes` stream is an **append-mostly** timeline: log freely and keep it
+high-signal so future-you can skim it. Notes are not edited in place; to retract
+one, use `memory_delete` (soft by default — see below). Pick the category by
+intent:
 
 | Category | Log this | Examples |
 |----------|----------|----------|
@@ -194,6 +198,21 @@ related note for you.
 Use `topic` to tag a sub-area (e.g. `"migrations"`, `"phase-8"`) so you can
 filter later with `memory_query(category=…, topic=…)`. Use `related_type` /
 `related_id` to link a note to a `todo`, `blocker`, `pr`, etc.
+
+## Deleting notes
+
+To retract a note, call `memory_delete(agent_cwd, ids, hard?)` with ids from
+`memory_query`. You can only delete your **own** notes.
+
+- **Soft delete (default, `hard=false`)** is reversible: it hides the note from
+  `memory_query` / `memory_export` but keeps the row. Pass `include_deleted=true`
+  to either tool to still see soft-deleted notes (export marks them _(deleted)_),
+  and call `memory_restore(agent_cwd, ids)` to bring them back. Prefer soft
+  almost always.
+- **Hard delete (`hard=true`)** permanently removes the row and **cannot be
+  undone** (not even by `memory_restore`). Only pass `hard=true` after the user
+  has **explicitly confirmed** they want the notes destroyed — never decide to
+  hard-delete on your own.
 
 ---
 
