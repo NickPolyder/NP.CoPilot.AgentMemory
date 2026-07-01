@@ -22,6 +22,7 @@ from np_agent_memory.tools._common import (
     decode_cursor,
     encode_cursor,
     keyset_predicate,
+    metadata_to_json,
     require_agent_id,
     truncate,
 )
@@ -58,14 +59,6 @@ _TODO_COLUMNS = (
     "id, title, description, status, priority, due_date, "
     "created_at, updated_at, completed_at, metadata_json"
 )
-
-
-def _metadata_to_json(metadata: dict[str, Any] | None) -> str | None:
-    if metadata is None:
-        return None
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata must be an object (mapping), not a scalar/array.")
-    return json.dumps(metadata, separators=(",", ":"))
 
 
 def _row_to_todo(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
@@ -114,7 +107,7 @@ def add_todo(
         raise ValueError(f"due_date is too long (max {_MAX_DUE_LEN} chars).")
 
     canonical = canonicalize_agent_cwd(agent_cwd)
-    metadata_json = _metadata_to_json(metadata)
+    metadata_json = metadata_to_json(metadata)
 
     def _work(c: sqlite3.Connection) -> tuple[str, str]:
         agent_id = require_agent_id(c, canonical)

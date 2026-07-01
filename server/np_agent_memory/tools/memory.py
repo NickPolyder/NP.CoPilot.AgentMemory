@@ -23,8 +23,10 @@ from np_agent_memory.tools._common import (
     decode_cursor,
     encode_cursor,
     keyset_predicate,
+    metadata_to_json,
     require_agent_id,
     truncate,
+    validate_id_batch,
 )
 
 # Note categories — single source of truth for both the JSON-schema enum (via
@@ -54,15 +56,6 @@ _NOTE_COLUMNS = (
 )
 
 
-def _metadata_to_json(metadata: dict[str, Any] | None) -> str | None:
-    """Serialize a metadata object to a JSON string, or ``None``."""
-    if metadata is None:
-        return None
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata must be an object (mapping), not a scalar/array.")
-    return json.dumps(metadata, separators=(",", ":"))
-
-
 def _row_to_note(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
     """Shape a notes row for a tool response, truncating content unless full."""
     content = row["content"]
@@ -85,6 +78,47 @@ def _row_to_note(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
         note["content_truncated"] = True
         note["content_length"] = len(row["content"])
     return note
+
+
+def append_note(
+    c: sqlite3.Connection,
+    *,
+    agent_id: str,
+    category: str,
+    content: str,
+    topic: str | None = None,
+    related_type: str | None = None,
+    related_id: str | None = None,
+    session_id: str | None = None,
+    metadata_json: str | None = None,
+) -> tuple[str, str]:
+    """Insert a note row within the caller's transaction; return ``(id, ts)``.
+
+    The single writer for the ``notes`` table. Other domains that auto-log a
+    timeline event (e.g. blockers) call this instead of hand-rolling the notes
+    schema/category knowledge, so all note writes stay in one place.
+    """
+    note_id = new_ulid()
+    ts = now_iso()
+    c.execute(
+        "INSERT INTO notes "
+        "(id, agent_id, timestamp, category, topic, content, session_id, "
+        "related_type, related_id, metadata_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            note_id,
+            agent_id,
+            ts,
+            category,
+            topic,
+            content,
+            session_id,
+            related_type,
+            related_id,
+            metadata_json,
+        ),
+    )
+    return note_id, ts
 
 
 def log_memory(
@@ -116,31 +150,21 @@ def log_memory(
         raise ValueError(f"session_id is too long (max {_MAX_SESSION_LEN} chars).")
 
     canonical = canonicalize_agent_cwd(agent_cwd)
-    metadata_json = _metadata_to_json(metadata)
+    metadata_json = metadata_to_json(metadata)
 
     def _work(c: sqlite3.Connection) -> tuple[str, str]:
         agent_id = require_agent_id(c, canonical)
-        note_id = new_ulid()
-        ts = now_iso()
-        c.execute(
-            "INSERT INTO notes "
-            "(id, agent_id, timestamp, category, topic, content, session_id, "
-            "related_type, related_id, metadata_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                note_id,
-                agent_id,
-                ts,
-                category,
-                topic,
-                content,
-                session_id,
-                related_type,
-                related_id,
-                metadata_json,
-            ),
+        return append_note(
+            c,
+            agent_id=agent_id,
+            category=category,
+            content=content,
+            topic=topic,
+            related_type=related_type,
+            related_id=related_id,
+            session_id=session_id,
+            metadata_json=metadata_json,
         )
-        return note_id, ts
 
     note_id, ts = run_in_write_txn(conn, _work)
     return {"id": note_id, "timestamp": ts, "category": category, "topic": topic}
@@ -293,19 +317,8 @@ def export_memory(
 
 
 def _validate_note_ids(ids: list[str]) -> list[str]:
-    """Validate and de-duplicate a caller-supplied list of note ids.
-
-    Returns the ids with order preserved and duplicates removed. Raises
-    ``ValueError`` for a non-list, empty list, non-string element, or a list
-    longer than ``_MAX_NOTE_IDS``.
-    """
-    if not isinstance(ids, list) or not ids:
-        raise ValueError("ids must be a non-empty list of note ids.")
-    if not all(isinstance(note_id, str) for note_id in ids):
-        raise ValueError("ids must contain only strings.")
-    if len(ids) > _MAX_NOTE_IDS:
-        raise ValueError(f"ids must contain at most {_MAX_NOTE_IDS} ids per call.")
-    return list(dict.fromkeys(ids))
+    """Validate and de-duplicate a caller-supplied list of note ids."""
+    return validate_id_batch(ids, label="ids", max_count=_MAX_NOTE_IDS)
 
 
 def delete_notes(

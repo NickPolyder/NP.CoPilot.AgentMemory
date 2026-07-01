@@ -20,6 +20,58 @@ from typing import Any
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
+# Server-side cap on the serialized size of an agent-supplied ``metadata``
+# object. Bounds local DB bloat and MCP response size; the per-field text caps
+# (name/title/body/etc.) do not otherwise constrain the free-form metadata blob.
+MAX_METADATA_BYTES = 8192
+
+# Server-side cap on the number of ids accepted by a batch mutation tool
+# (delete/ack/release). Mirrors ``MAX_LIMIT`` so a single call cannot build an
+# unbounded ``IN (...)`` clause or an oversized write transaction.
+MAX_ID_BATCH = MAX_LIMIT
+
+
+def metadata_to_json(metadata: dict[str, Any] | None) -> str | None:
+    """Serialize an agent-supplied ``metadata`` mapping to compact JSON, or ``None``.
+
+    Shared by every tool that persists a ``metadata`` blob. Rejects non-mappings,
+    non-finite floats (``NaN``/``Infinity`` are not valid JSON), and payloads
+    whose serialized form exceeds :data:`MAX_METADATA_BYTES` so a pathological
+    caller cannot bloat the DB or an MCP response.
+    """
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object (mapping), not a scalar/array.")
+    try:
+        encoded = json.dumps(metadata, separators=(",", ":"), allow_nan=False)
+    except ValueError as exc:
+        raise ValueError(f"metadata is not JSON-serializable: {exc}") from exc
+    if len(encoded.encode("utf-8")) > MAX_METADATA_BYTES:
+        raise ValueError(
+            f"metadata is too large (max {MAX_METADATA_BYTES} bytes serialized)."
+        )
+    return encoded
+
+
+def validate_id_batch(
+    ids: list[str], *, label: str = "ids", max_count: int = MAX_ID_BATCH
+) -> list[str]:
+    """Validate and de-duplicate a caller-supplied batch of ids.
+
+    Returns the ids with order preserved and duplicates removed. Raises
+    ``ValueError`` for a non-list, empty list, non-string element, or a batch
+    larger than ``max_count``. ``label`` names the argument in error messages
+    (e.g. ``"ids"``, ``"message_ids"``).
+    """
+    if not isinstance(ids, list) or not ids:
+        raise ValueError(f"{label} must be a non-empty list of ids.")
+    if not all(isinstance(item, str) for item in ids):
+        raise ValueError(f"{label} must contain only strings.")
+    if len(ids) > max_count:
+        raise ValueError(f"{label} must contain at most {max_count} ids per call.")
+    return list(dict.fromkeys(ids))
+
 
 def resolve_agent_id(conn: sqlite3.Connection, canonical_path: str) -> str | None:
     """Return the internal agent ULID for a canonical path, or ``None``.

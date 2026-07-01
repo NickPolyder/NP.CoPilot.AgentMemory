@@ -20,6 +20,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory.db import connect, ensure_data_dir, get_db_path, run_in_write_txn
+from np_agent_memory.identity import now_iso
 
 _BACKUP_PREFIX = "agent-memory-"
 _BACKUP_SUFFIX = ".db"
@@ -31,11 +32,6 @@ _RECENT_BACKUP_WINDOW = timedelta(hours=24)
 _PENDING_BACKUP_WINDOW = timedelta(minutes=5)
 
 
-def _now_iso() -> str:
-    """Return the current UTC time as an ISO-8601 string."""
-    return datetime.now(UTC).isoformat()
-
-
 def _backup_path(backups_dir: Path) -> Path:
     """Return today's backup file path inside ``backups_dir``."""
     return backups_dir / f"{_BACKUP_PREFIX}{date.today().isoformat()}{_BACKUP_SUFFIX}"
@@ -43,7 +39,7 @@ def _backup_path(backups_dir: Path) -> Path:
 
 def _insert_backup_run(db_path: Path, path: Path) -> int:
     """Insert a pending backup run row and return its integer id."""
-    started_at = _now_iso()
+    started_at = now_iso()
 
     def _work(c: sqlite3.Connection) -> int:
         cur = c.execute(
@@ -61,7 +57,7 @@ def _insert_backup_run(db_path: Path, path: Path) -> int:
 
 def _finish_backup_run(db_path: Path, run_id: int, *, success: bool) -> None:
     """Mark a pending backup run as finished."""
-    finished_at = _now_iso()
+    finished_at = now_iso()
 
     def _work(c: sqlite3.Connection) -> None:
         c.execute(
@@ -143,7 +139,7 @@ def maybe_daily_backup(db_path: Path, backups_dir: Path) -> Path | None:
     now = datetime.now(UTC)
     cutoff = (now - _RECENT_BACKUP_WINDOW).isoformat()
     pending_cutoff = (now - _PENDING_BACKUP_WINDOW).isoformat()
-    started_at = _now_iso()
+    started_at = now_iso()
 
     def _work(c: sqlite3.Connection) -> int | None:
         recent = c.execute(
