@@ -148,7 +148,7 @@ def _ensure_migrations_table(conn: sqlite3.Connection) -> None:
 def _applied_versions(conn: sqlite3.Connection) -> dict[int, str]:
     """Return {version: checksum} for all applied migrations."""
     rows = conn.execute("select version, checksum from migrations").fetchall()
-    return {row[0]: row[1] for row in rows}
+    return {row["version"]: row["checksum"] for row in rows}
 
 
 def _open_migration_connection(db_path: Path) -> sqlite3.Connection:
@@ -171,6 +171,9 @@ def _open_migration_connection(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), autocommit=True)
     try:
         configure_connection(conn)
+        # Named column access (parity with the runtime factory) so the version /
+        # checksum reads below read by name rather than positional index.
+        conn.row_factory = sqlite3.Row
         # Override busy_timeout: migrations rely on explicit retry/backoff,
         # so a shorter timeout avoids 5s × retries worst-case stall.
         conn.execute("PRAGMA busy_timeout = 1000;")
@@ -357,7 +360,7 @@ def _apply_migration(
                 ).fetchone()
                 if row is not None:
                     conn.execute("ROLLBACK")
-                    existing = row[0]
+                    existing = row["checksum"]
                     if existing != checksum:
                         raise RuntimeError(
                             f"Migration {filename} checksum mismatch after race! "

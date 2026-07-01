@@ -75,9 +75,12 @@ agent_register(
 > **Naming:** if you omit `name`, the server defaults it to your working
 > directory's own name (e.g. `NP.CoPilot.AgentMemory`) on first registration.
 > Prefer that default — show it to the user and ask whether they want a
-> different name before overriding it. On later calls, omitting `name` keeps
-> whatever is stored (it won't reset to the directory name), so only pass
-> `name` when the user wants to change it.
+> different name before setting one.
+>
+> Your name is **sticky**: once you're registered, `agent_register` ignores any
+> `name` you pass — it won't change your stored name, so re-registering every
+> session can't make your identity drift. To actually change your name, the
+> user must ask for it, and you call `agent_rename(agent_cwd, name)`.
 
 Then orient yourself before doing work:
 
@@ -105,8 +108,9 @@ truncated — pass `full=true` to get the untruncated value.
 
 | Tool | What it does |
 |------|--------------|
-| `agent_register(agent_cwd, name?, workstream?, description?)` | Register/refresh you for this repo root. Idempotent. `name` defaults to the directory name on first call; omit it later to keep the stored name. |
+| `agent_register(agent_cwd, name?, workstream?, description?)` | Register/refresh you for this repo root. Idempotent. `name` defaults to the directory name on first call and is **sticky** thereafter — passing a different `name` later is ignored. |
 | `agent_describe(agent_cwd)` | Your metadata + counts of open todos, active blockers, unread messages. |
+| `agent_rename(agent_cwd, name)` | Explicitly change your stored name. The **only** way to rename after first registration — use it only when the user asks. |
 | `agent_add_alias(agent_cwd, new_cwd)` | Attach a second path to the same identity (work-tree, moved repo). |
 | `agent_list(limit, cursor?, workstream?, full?)` | **Global** directory of all registered agents (no `agent_cwd`) — find peers to address with `inbox_send`. Newest first; `description` truncated unless `full=true`; optional exact-match `workstream` filter. |
 
@@ -135,6 +139,7 @@ truncated — pass `full=true` to get the untruncated value.
 | `blocker_open(agent_cwd, title, description?, owner?, workstream?, external_key?)` | Open a blocker (status `active`); also auto-logs a related note. Pass `external_key` for idempotency. |
 | `blocker_list(agent_cwd, limit, status?, workstream?, cursor?, full?)` | List blockers. `status` ∈ `active`/`escalated`/`resolved`. |
 | `blocker_resolve(agent_cwd, blocker_id, resolution?)` | Resolve a blocker; auto-logs a note. |
+| `blocker_escalate(agent_cwd, blocker_id, reason?)` | Escalate an `active` blocker to `escalated` (stamps `escalated_at`); auto-logs a note. Fails if already escalated/resolved. |
 
 ## Inbox (agent-to-agent messages)
 
@@ -159,9 +164,10 @@ crash-safe claim → ack protocol:
 
 | Tool | What it does |
 |------|--------------|
-| `handover_claim(consumer_id, limit, stale_minutes?)` | Claim a batch of unconsumed handovers (stamps `claimed_by`). |
+| `handover_claim(consumer_id, limit, stale_minutes?, full?)` | Claim a batch of unconsumed handovers (stamps `claimed_by`). Returns full `body_md` by default; pass `full=false` to truncate. |
 | `handover_ack(consumer_id, ids)` | Mark claimed handovers consumed (after they're safely stored). |
-| `handover_release(consumer_id, ids, last_error?)` | Release claims for retry without waiting for the stale timeout. |
+| `handover_release(consumer_id, ids, last_error?)` | Release claims for retry without waiting for the stale timeout. A release at/beyond the attempt cap **quarantines** the handover (terminal dead-letter); reported in `quarantined_ids`. |
+| `handover_quarantined(limit, cursor?, full?)` | List dead-lettered handovers (those that exhausted claim attempts) for triage, with `last_error`/`quarantined_at`. Newest-first. |
 
 ## Server-scoped
 

@@ -92,7 +92,6 @@ def memory_alive() -> dict[str, Any]:
         "started_at_iso": _STARTED_AT_ISO,
         "uptime_seconds": round(time.time() - _STARTED_AT, 3),
         "db_path": str(_DB_PATH) if _DB_PATH else None,
-        "phase": "7 - memory/todos/blockers/handovers/inbox + lazy backup",
     }
 
 

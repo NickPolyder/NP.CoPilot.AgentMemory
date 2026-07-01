@@ -24,7 +24,6 @@ class TestMemoryAliveTool:
             "started_at_iso",
             "uptime_seconds",
             "db_path",
-            "phase",
         }
         assert set(result.keys()) == expected_keys
 
@@ -39,7 +38,6 @@ class TestMemoryAliveTool:
         assert isinstance(result["uptime_seconds"], (int, float))
         # db_path is None before main() runs, or str after
         assert result["db_path"] is None or isinstance(result["db_path"], str)
-        assert isinstance(result["phase"], str)
 
     def test_db_path_none_before_init(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Before main() is called, db_path should be None."""

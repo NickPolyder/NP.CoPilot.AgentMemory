@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "np-agent-memory"
-version = "0.8.0"
+dynamic = ["version"]
 description = "Shared SQLite-backed memory + cross-agent inbox for Copilot CLI agents."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -45,6 +45,12 @@ np-agent-memory = "np_agent_memory.__main__:main"
 # runner discovers via Path(__file__).parent.
 [tool.hatch.build.targets.wheel]
 packages = ["server/np_agent_memory"]
+
+# Single source of truth for the version: hatchling reads ``__version__`` from
+# the package ``__init__.py`` (regex source) so the build and the runtime
+# ``memory_alive`` probe never drift out of sync.
+[tool.hatch.version]
+path = "server/np_agent_memory/__init__.py"
 
 [tool.uv]
 # Rebuild the uvx environment whenever the packaged source changes, so a

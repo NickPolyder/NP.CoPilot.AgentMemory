@@ -30,17 +30,14 @@ from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_tx
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
 from np_agent_memory.tools._common import (
     clamp_limit,
+    decode_cursor,
+    encode_cursor,
+    keyset_predicate,
+    metadata_to_json,
     require_agent_id,
     truncate,
+    validate_id_batch,
 )
-
-
-def _metadata_to_json(metadata: dict[str, Any] | None) -> str | None:
-    if metadata is None:
-        return None
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata must be an object (mapping), not a scalar/array.")
-    return json.dumps(metadata, separators=(",", ":"))
 
 
 def _json_or_none(value: str | None) -> Any:
@@ -61,9 +58,17 @@ _BODY_PREVIEW_LEN = 2_000
 _DEFAULT_STALE_MINUTES = 15
 _MAX_STALE_MINUTES = 1_440  # 24h
 
+# Dead-letter cap: a release at or above this attempt_count quarantines the
+# handover (terminal) instead of making it reclaimable, so a poison payload
+# that never ingests cannot be retried forever. attempt_count is incremented
+# once per claim, so this is effectively "give up after N failed claim/ingest
+# rounds". Healthy consumers ack on success and never reach it. See ADR 0007.
+_MAX_CLAIM_ATTEMPTS = 5
+
 _HANDOVER_COLUMNS = (
     "id, agent_id, session_id, saved_at, summary, body_md, "
-    "claimed_at, claimed_by, attempt_count, last_error, consumed_at, metadata_json"
+    "claimed_at, claimed_by, attempt_count, last_error, consumed_at, "
+    "quarantined_at, metadata_json"
 )
 
 
@@ -110,7 +115,7 @@ def save_handover(
         raise ValueError(f"session_id is too long (max {_MAX_SESSION_LEN} chars).")
 
     canonical = canonicalize_agent_cwd(agent_cwd)
-    metadata_json = _metadata_to_json(metadata)
+    metadata_json = metadata_to_json(metadata)
 
     def _work(c: sqlite3.Connection) -> tuple[str, str]:
         agent_id = require_agent_id(c, canonical)
@@ -200,28 +205,40 @@ def _require_consumer_id(consumer_id: str) -> str:
     return consumer_id
 
 
-def _claimed_row(row: sqlite3.Row) -> dict[str, Any]:
-    """Shape a claimed handover for the consumer (full body, with agent_name).
+def _claimed_row(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
+    """Shape a claimed handover for the consumer (with agent_name).
 
     This is the cross-agent *ingest* boundary (e.g. Connects), not the
     agent-facing boundary, so exposing the internal ``agent_id`` here is
     deliberate: the trusted consumer uses it as a stable correlation key
     alongside the human-readable ``agent_name``. Normal agent-scoped tools
     never leak this id.
+
+    ``body_md`` is returned in full by default (the ingest contract), but a
+    consumer can pass ``full=False`` to get a truncated preview when it only
+    needs metadata and wants to bound the response size.
     """
-    return {
+    body = row["body_md"]
+    truncated = False
+    if not full:
+        body, truncated = truncate(body, _BODY_PREVIEW_LEN)
+    claimed: dict[str, Any] = {
         "id": row["id"],
         "agent_id": row["agent_id"],
         "agent_name": row["agent_name"],
         "session_id": row["session_id"],
         "saved_at": row["saved_at"],
         "summary": row["summary"],
-        "body_md": row["body_md"],
+        "body_md": body,
         "attempt_count": row["attempt_count"],
         "claimed_at": row["claimed_at"],
         "claimed_by": row["claimed_by"],
         "metadata": _json_or_none(row["metadata_json"]),
     }
+    if truncated:
+        claimed["body_truncated"] = True
+        claimed["body_length"] = len(row["body_md"])
+    return claimed
 
 
 def claim_handovers(
@@ -230,6 +247,7 @@ def claim_handovers(
     consumer_id: str,
     limit: int,
     stale_minutes: int = _DEFAULT_STALE_MINUTES,
+    full: bool = True,
 ) -> dict[str, Any]:
     """Claim up to ``limit`` unconsumed handovers for a consumer.
 
@@ -237,6 +255,10 @@ def claim_handovers(
     older than ``stale_minutes``). Each claimed row's ``claimed_at`` /
     ``claimed_by`` are stamped and ``attempt_count`` is incremented. Oldest
     handovers (by ``saved_at``) are claimed first.
+
+    ``full`` defaults to True so the ingest contract (e.g. Connects) receives
+    the complete ``body_md``. Pass ``full=False`` to truncate each body to a
+    preview, bounding the response when only metadata is needed.
     """
     consumer_id = _require_consumer_id(consumer_id)
     limit = clamp_limit(limit)
@@ -252,6 +274,7 @@ def claim_handovers(
         candidates = c.execute(
             "SELECT id FROM handovers "
             "WHERE consumed_at IS NULL "
+            "  AND quarantined_at IS NULL "
             "  AND (claimed_at IS NULL OR claimed_at < ?) "
             "ORDER BY saved_at ASC, id ASC LIMIT ?",
             (cutoff, limit),
@@ -275,7 +298,7 @@ def claim_handovers(
         ).fetchall()
 
     rows = run_in_write_txn(conn, _work)
-    handovers = [_claimed_row(r) for r in rows]
+    handovers = [_claimed_row(r, full=full) for r in rows]
     return {"handovers": handovers, "count": len(handovers)}
 
 
@@ -284,8 +307,7 @@ def ack_handovers(
 ) -> dict[str, Any]:
     """Mark claimed handovers consumed. Only the claiming consumer may ack."""
     consumer_id = _require_consumer_id(consumer_id)
-    if not isinstance(ids, list) or not ids:
-        raise ValueError("ids must be a non-empty list of handover ids.")
+    ids = validate_id_batch(ids, label="ids")
 
     def _work(c: sqlite3.Connection) -> list[str]:
         now = now_iso()
@@ -312,29 +334,145 @@ def release_handovers(
     ids: list[str],
     last_error: str | None = None,
 ) -> dict[str, Any]:
-    """Release claims (clean backoff) so other consumers may retry them."""
+    """Release claims (clean backoff) so other consumers may retry them.
+
+    A release at or above :data:`_MAX_CLAIM_ATTEMPTS` dead-letters the handover
+    instead of freeing it: ``quarantined_at`` is stamped (terminal) so a poison
+    payload cannot be retried forever. Quarantined ids are reported separately
+    and are inspectable via :func:`list_quarantined_handovers`.
+    """
     consumer_id = _require_consumer_id(consumer_id)
-    if not isinstance(ids, list) or not ids:
-        raise ValueError("ids must be a non-empty list of handover ids.")
+    ids = validate_id_batch(ids, label="ids")
     if last_error is not None and len(last_error) > _MAX_ERROR_LEN:
         raise ValueError(f"last_error is too long (max {_MAX_ERROR_LEN} chars).")
 
-    def _work(c: sqlite3.Connection) -> list[str]:
+    def _work(c: sqlite3.Connection) -> tuple[list[str], list[str]]:
         released: list[str] = []
+        quarantined: list[str] = []
         for hid in ids:
-            cur = c.execute(
-                "UPDATE handovers SET claimed_at = NULL, claimed_by = NULL, "
-                "last_error = ? "
-                "WHERE id = ? AND claimed_by = ? AND consumed_at IS NULL",
-                (last_error, hid, consumer_id),
-            )
-            if cur.rowcount:
+            row = c.execute(
+                "SELECT attempt_count FROM handovers "
+                "WHERE id = ? AND claimed_by = ? AND consumed_at IS NULL "
+                "  AND quarantined_at IS NULL",
+                (hid, consumer_id),
+            ).fetchone()
+            if row is None:
+                continue  # not our claim / already consumed / already quarantined
+            if row["attempt_count"] >= _MAX_CLAIM_ATTEMPTS:
+                # Terminal: keep claimed_at/claimed_by for forensics (which
+                # consumer dead-lettered it), stamp quarantined_at + last_error.
+                c.execute(
+                    "UPDATE handovers SET quarantined_at = ?, last_error = ? "
+                    "WHERE id = ?",
+                    (now_iso(), last_error, hid),
+                )
+                quarantined.append(hid)
+            else:
+                c.execute(
+                    "UPDATE handovers SET claimed_at = NULL, claimed_by = NULL, "
+                    "last_error = ? WHERE id = ?",
+                    (last_error, hid),
+                )
                 released.append(hid)
-        return released
+        return released, quarantined
 
-    released = run_in_write_txn(conn, _work)
-    skipped = [hid for hid in ids if hid not in released]
-    return {"released": len(released), "released_ids": released, "skipped": skipped}
+    released, quarantined = run_in_write_txn(conn, _work)
+    handled = set(released) | set(quarantined)
+    skipped = [hid for hid in ids if hid not in handled]
+    return {
+        "released": len(released),
+        "released_ids": released,
+        "quarantined": len(quarantined),
+        "quarantined_ids": quarantined,
+        "skipped": skipped,
+    }
+
+
+def _quarantined_row(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
+    """Shape a quarantined (dead-lettered) handover for consumer inspection.
+
+    Like :func:`_claimed_row` (same ingest boundary — ``agent_id`` is exposed
+    deliberately) but also surfaces ``quarantined_at``, ``attempt_count`` and
+    ``last_error`` so a consumer can triage why ingest gave up.
+    """
+    body = row["body_md"]
+    truncated = False
+    if not full:
+        body, truncated = truncate(body, _BODY_PREVIEW_LEN)
+    quarantined: dict[str, Any] = {
+        "id": row["id"],
+        "agent_id": row["agent_id"],
+        "agent_name": row["agent_name"],
+        "session_id": row["session_id"],
+        "saved_at": row["saved_at"],
+        "summary": row["summary"],
+        "body_md": body,
+        "attempt_count": row["attempt_count"],
+        "last_error": row["last_error"],
+        "claimed_by": row["claimed_by"],
+        "quarantined_at": row["quarantined_at"],
+        "metadata": _json_or_none(row["metadata_json"]),
+    }
+    if truncated:
+        quarantined["body_truncated"] = True
+        quarantined["body_length"] = len(row["body_md"])
+    return quarantined
+
+
+def list_quarantined_handovers(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    cursor: str | None = None,
+    full: bool = False,
+) -> dict[str, Any]:
+    """List dead-lettered handovers (newest-quarantined first) for inspection.
+
+    Consumer-side and cross-agent (not scoped to ``agent_cwd``): the ingest
+    process uses this to triage payloads that exhausted their claim attempts.
+    Keyset-paginated on ``(quarantined_at, id)`` descending; ``body_md`` is
+    truncated unless ``full=True``.
+    """
+    limit = clamp_limit(limit)
+    cursor_key = decode_cursor(cursor) if cursor else None
+    if cursor_key is not None and len(cursor_key) != 2:
+        raise ValueError("invalid cursor for quarantined handover list.")
+
+    def _work(c: sqlite3.Connection) -> list[sqlite3.Row]:
+        clauses = ["h.quarantined_at IS NOT NULL"]
+        params: list[Any] = []
+        if cursor_key is not None:
+            frag, frag_params = keyset_predicate(
+                [("h.quarantined_at", cursor_key[0]), ("h.id", cursor_key[1])],
+                direction="<",
+            )
+            clauses.append(frag)
+            params.extend(frag_params)
+        where = " AND ".join(clauses)
+        params.append(limit + 1)
+        return c.execute(
+            f"SELECT h.{', h.'.join(_HANDOVER_COLUMNS.split(', '))}, "
+            f"a.name AS agent_name "
+            f"FROM handovers h JOIN agents a ON a.id = h.agent_id "
+            f"WHERE {where} "
+            f"ORDER BY h.quarantined_at DESC, h.id DESC LIMIT ?",
+            params,
+        ).fetchall()
+
+    rows = run_in_read_txn(conn, _work)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    handovers = [_quarantined_row(r, full=full) for r in rows]
+    next_cursor = (
+        encode_cursor([rows[-1]["quarantined_at"], rows[-1]["id"]])
+        if has_more and rows
+        else None
+    )
+    return {
+        "handovers": handovers,
+        "count": len(handovers),
+        "next_cursor": next_cursor,
+    }
 
 
 def register_handover_tools(mcp: FastMCP) -> None:
@@ -399,7 +537,16 @@ def register_handover_tools(mcp: FastMCP) -> None:
             )
 
     @mcp.tool()
-    def handover_latest(agent_cwd: str, full: bool = False) -> dict[str, Any]:
+    def handover_latest(
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        full: Annotated[
+            bool,
+            Field(description="Return untruncated body_md when true."),
+        ] = False,
+    ) -> dict[str, Any]:
         """Return your most recent handover (or null if none).
 
         Args:
@@ -415,7 +562,14 @@ def register_handover_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def handover_export(
-        agent_cwd: str, handover_id: str | None = None
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        handover_id: Annotated[
+            str | None,
+            Field(description="A specific handover id; omit for your latest."),
+        ] = None,
     ) -> dict[str, Any]:
         """Render one of your handovers as markdown (full body).
 
@@ -431,9 +585,25 @@ def register_handover_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def handover_claim(
-        consumer_id: str,
-        limit: int,
-        stale_minutes: int = _DEFAULT_STALE_MINUTES,
+        consumer_id: Annotated[
+            str,
+            Field(description='Opaque consumer label (e.g. "connects-ingest").'),
+        ],
+        limit: Annotated[
+            int,
+            Field(description="Max handovers to claim (server-capped)."),
+        ],
+        stale_minutes: Annotated[
+            int,
+            Field(description="Minutes until a claim is reclaimable (default 15)."),
+        ] = _DEFAULT_STALE_MINUTES,
+        full: Annotated[
+            bool,
+            Field(
+                description="Return the complete body_md (default true). Set "
+                "false to truncate each body to a preview."
+            ),
+        ] = True,
     ) -> dict[str, Any]:
         """Consumer-side: claim a batch of unconsumed handovers for ingest.
 
@@ -449,9 +619,12 @@ def register_handover_tools(mcp: FastMCP) -> None:
             limit: Max handovers to claim (server-capped).
             stale_minutes: How long an existing claim must be before it is
                 reclaimable (default 15, capped at 1440).
+            full: Return the complete ``body_md`` (default true, the ingest
+                contract). Set false to truncate each body to a preview.
 
         Returns:
-            ``handovers`` (full body, with ``agent_name``) and ``count``.
+            ``handovers`` (full body unless ``full=false``, with ``agent_name``)
+            and ``count``.
         """
         with open_connection() as conn:
             return claim_handovers(
@@ -459,10 +632,20 @@ def register_handover_tools(mcp: FastMCP) -> None:
                 consumer_id=consumer_id,
                 limit=limit,
                 stale_minutes=stale_minutes,
+                full=full,
             )
 
     @mcp.tool()
-    def handover_ack(consumer_id: str, ids: list[str]) -> dict[str, Any]:
+    def handover_ack(
+        consumer_id: Annotated[
+            str,
+            Field(description="The same label used to claim."),
+        ],
+        ids: Annotated[
+            list[str],
+            Field(description="Handover ids to mark consumed."),
+        ],
+    ) -> dict[str, Any]:
         """Consumer-side: mark claimed handovers as consumed.
 
         Only handovers currently claimed by ``consumer_id`` (and not already
@@ -480,12 +663,27 @@ def register_handover_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def handover_release(
-        consumer_id: str, ids: list[str], last_error: str | None = None
+        consumer_id: Annotated[
+            str,
+            Field(description="The same label used to claim."),
+        ],
+        ids: Annotated[
+            list[str],
+            Field(description="Handover ids to release."),
+        ],
+        last_error: Annotated[
+            str | None,
+            Field(description="Optional reason recorded on each released handover."),
+        ] = None,
     ) -> dict[str, Any]:
         """Consumer-side: release claims so they can be retried later.
 
         Clears ``claimed_at`` / ``claimed_by`` and records ``last_error`` for
         handovers currently claimed by ``consumer_id`` and not yet consumed.
+        A release at or beyond the internal attempt cap instead **quarantines**
+        the handover (a terminal dead-letter state): it stops being claimable
+        and is reported in ``quarantined_ids``. Inspect dead-letters with
+        ``handover_quarantined``.
 
         Args:
             consumer_id: The same label used to claim.
@@ -493,9 +691,45 @@ def register_handover_tools(mcp: FastMCP) -> None:
             last_error: Optional reason recorded on each released handover.
 
         Returns:
-            ``released`` count, ``released_ids`` and ``skipped`` ids.
+            ``released`` / ``released_ids``, ``quarantined`` / ``quarantined_ids``
+            (dead-lettered this call) and ``skipped`` ids.
         """
         with open_connection() as conn:
             return release_handovers(
                 conn, consumer_id=consumer_id, ids=ids, last_error=last_error
+            )
+
+    @mcp.tool()
+    def handover_quarantined(
+        limit: Annotated[
+            int,
+            Field(description="Max quarantined handovers to return (server-capped)."),
+        ],
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque token from a previous call's next_cursor."),
+        ] = None,
+        full: Annotated[
+            bool,
+            Field(description="Return the complete body_md (default false)."),
+        ] = False,
+    ) -> dict[str, Any]:
+        """Consumer-side: list dead-lettered handovers for inspection.
+
+        Cross-agent (not scoped to a caller): surfaces handovers that exhausted
+        their claim attempts and were quarantined by ``handover_release``, so an
+        ingest process can triage them. Newest-quarantined first, paginated.
+
+        Args:
+            limit: Max quarantined handovers to return (server-capped).
+            cursor: Opaque token from a previous call's ``next_cursor``.
+            full: Return the complete ``body_md`` (default false — truncated).
+
+        Returns:
+            ``handovers`` (each with ``last_error`` / ``quarantined_at`` /
+            ``attempt_count``), ``count`` and ``next_cursor``.
+        """
+        with open_connection() as conn:
+            return list_quarantined_handovers(
+                conn, limit=limit, cursor=cursor, full=full
             )

@@ -10,7 +10,13 @@ import pytest
 from np_agent_memory.db import open_connection
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools.agents import register_agent
-from np_agent_memory.tools.blockers import list_blockers, open_blocker, resolve_blocker
+from np_agent_memory.tools.blockers import (
+    _DESCRIPTION_PREVIEW_LEN,
+    escalate_blocker,
+    list_blockers,
+    open_blocker,
+    resolve_blocker,
+)
 from np_agent_memory.tools.memory import query_memory
 
 
@@ -173,3 +179,100 @@ class TestResolveBlocker:
         theirs = open_blocker(db_conn, agent_cwd=str(other), title="theirs")
         with pytest.raises(ValueError, match="not found"):
             resolve_blocker(db_conn, agent_cwd=agent_cwd, blocker_id=theirs["id"])
+
+
+class TestEscalateBlocker:
+    def test_escalates_and_stamps(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        b = open_blocker(db_conn, agent_cwd=agent_cwd, title="x")
+        out = escalate_blocker(
+            db_conn, agent_cwd=agent_cwd, blocker_id=b["id"], reason="urgent"
+        )
+        assert out["status"] == "escalated"
+        assert out["escalated_at"] is not None
+
+    def test_escalate_auto_logs_note_with_reason(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        b = open_blocker(db_conn, agent_cwd=agent_cwd, title="x")
+        escalate_blocker(
+            db_conn, agent_cwd=agent_cwd, blocker_id=b["id"], reason="ping infra"
+        )
+        notes = query_memory(db_conn, agent_cwd=agent_cwd, limit=10)["notes"]
+        assert any(
+            "Blocker escalated" in n["content"] and "ping infra" in n["content"]
+            for n in notes
+        )
+
+    def test_escalated_blocker_appears_in_status_filter(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        b = open_blocker(db_conn, agent_cwd=agent_cwd, title="x")
+        escalate_blocker(db_conn, agent_cwd=agent_cwd, blocker_id=b["id"])
+        out = list_blockers(db_conn, agent_cwd=agent_cwd, limit=10, status="escalated")
+        assert [x["id"] for x in out["blockers"]] == [b["id"]]
+
+    def test_double_escalate_raises(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        b = open_blocker(db_conn, agent_cwd=agent_cwd, title="x")
+        escalate_blocker(db_conn, agent_cwd=agent_cwd, blocker_id=b["id"])
+        with pytest.raises(ValueError, match="already escalated"):
+            escalate_blocker(db_conn, agent_cwd=agent_cwd, blocker_id=b["id"])
+
+    def test_cannot_escalate_resolved(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        b = open_blocker(db_conn, agent_cwd=agent_cwd, title="x")
+        resolve_blocker(db_conn, agent_cwd=agent_cwd, blocker_id=b["id"])
+        with pytest.raises(ValueError, match="already resolved"):
+            escalate_blocker(db_conn, agent_cwd=agent_cwd, blocker_id=b["id"])
+
+    def test_unknown_blocker_raises(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        with pytest.raises(ValueError, match="not found"):
+            escalate_blocker(db_conn, agent_cwd=agent_cwd, blocker_id="nope")
+
+    def test_cannot_escalate_other_agents_blocker(
+        self, db_conn: sqlite3.Connection, agent_cwd: str, tmp_path: Path
+    ) -> None:
+        other = tmp_path / "other2"
+        other.mkdir()
+        register_agent(db_conn, name="other2", agent_cwd=str(other))
+        theirs = open_blocker(db_conn, agent_cwd=str(other), title="theirs")
+        with pytest.raises(ValueError, match="not found"):
+            escalate_blocker(db_conn, agent_cwd=agent_cwd, blocker_id=theirs["id"])
+
+
+# ---------------------------------------------------------------------------
+# Gap 5 (description) — exact-boundary truncation for blocker description
+# ---------------------------------------------------------------------------
+
+
+class TestDescriptionTruncationBoundary:
+    def test_description_at_exactly_preview_len_not_truncated(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        """Description exactly _DESCRIPTION_PREVIEW_LEN chars: no truncation flag."""
+        desc = "d" * _DESCRIPTION_PREVIEW_LEN
+        open_blocker(db_conn, agent_cwd=agent_cwd, title="boundary", description=desc)
+        out = list_blockers(db_conn, agent_cwd=agent_cwd, limit=1, full=False)
+        b = out["blockers"][0]
+        assert "description_truncated" not in b
+        assert len(b["description"]) == _DESCRIPTION_PREVIEW_LEN
+
+    def test_description_one_over_preview_len_is_truncated(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        """Description at _DESCRIPTION_PREVIEW_LEN+1 chars: truncation flag set."""
+        desc = "d" * (_DESCRIPTION_PREVIEW_LEN + 1)
+        open_blocker(
+            db_conn, agent_cwd=agent_cwd, title="over-boundary", description=desc
+        )
+        out = list_blockers(db_conn, agent_cwd=agent_cwd, limit=1, full=False)
+        b = out["blockers"][0]
+        assert b["description_truncated"] is True
+        assert b["description_length"] == _DESCRIPTION_PREVIEW_LEN + 1
+        assert len(b["description"]) == _DESCRIPTION_PREVIEW_LEN

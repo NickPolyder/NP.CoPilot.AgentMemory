@@ -19,10 +19,12 @@ from np_agent_memory.identity import (
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools import register_all_tools
 from np_agent_memory.tools.agents import (
+    _MAX_NAME_LEN,
     add_alias,
     describe_agent,
     list_agents,
     register_agent,
+    rename_agent,
 )
 
 
@@ -129,6 +131,13 @@ class TestUlidAndTimestamp:
     def test_now_iso_has_offset(self) -> None:
         assert "+00:00" in now_iso()
 
+    def test_now_iso_is_parseable_utc(self) -> None:
+        from datetime import UTC, datetime
+
+        parsed = datetime.fromisoformat(now_iso())
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == UTC.utcoffset(None)
+
 
 class TestDisplayBasename:
     def test_preserves_on_disk_casing(self, tmp_path: Path) -> None:
@@ -165,13 +174,29 @@ class TestRegisterAgent:
         assert "id" not in result
         assert "agent_id" not in result
 
-    def test_repeat_registration_is_existing_and_updates_name(
+    def test_repeat_registration_is_existing_and_keeps_name(
         self, db_conn: sqlite3.Connection, tmp_path: Path
     ) -> None:
+        # Name is sticky: re-registering with a different name must NOT change
+        # the stored name — a passed name is silently ignored for an existing
+        # agent. Renames go through rename_agent instead.
         register_agent(db_conn, name="old", agent_cwd=str(tmp_path))
         result = register_agent(db_conn, name="new-name", agent_cwd=str(tmp_path))
         assert result["registered"] == "existing"
-        assert result["name"] == "new-name"
+        assert result["name"] == "old"
+
+    def test_existing_agent_ignores_invalid_name(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        # Sticky-name contract: re-registering an existing agent ignores the
+        # passed name entirely, so a blank/overlong name must NOT raise — it
+        # must be silently dropped and the stored name preserved.
+        register_agent(db_conn, name="original", agent_cwd=str(tmp_path))
+        blank = register_agent(db_conn, name="   ", agent_cwd=str(tmp_path))
+        assert blank["registered"] == "existing"
+        assert blank["name"] == "original"
+        overlong = register_agent(db_conn, name="x" * 200, agent_cwd=str(tmp_path))
+        assert overlong["name"] == "original"
 
     def test_omitted_workstream_does_not_erase(
         self, db_conn: sqlite3.Connection, tmp_path: Path
@@ -292,7 +317,7 @@ class TestRegisterAgent:
 
         assert committed["done"], "the loser never retried (no race exercised)"
         assert result["registered"] == "existing"
-        assert result["name"] == "loser"  # name is always rewritten
+        assert result["name"] == "winner"  # sticky name: the loser sees "existing"
         with open_connection(db_path) as check:
             assert check.execute("SELECT COUNT(*) FROM agents").fetchone()[0] == 1
             assert (
@@ -445,6 +470,84 @@ class TestDescribeAgent:
 # ---------------------------------------------------------------------------
 # add_alias
 # ---------------------------------------------------------------------------
+
+
+class TestRenameAgent:
+    def test_rename_changes_stored_name(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        register_agent(db_conn, name="old", agent_cwd=str(tmp_path))
+        result = rename_agent(db_conn, agent_cwd=str(tmp_path), name="new")
+        assert result["renamed"] is True
+        assert result["name"] == "new"
+        assert describe_agent(db_conn, agent_cwd=str(tmp_path))["name"] == "new"
+
+    def test_rename_persists_over_reregister(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        # After an explicit rename, a subsequent register (even with a name)
+        # must keep the renamed value — register never fights a rename.
+        register_agent(db_conn, name="old", agent_cwd=str(tmp_path))
+        rename_agent(db_conn, agent_cwd=str(tmp_path), name="chosen")
+        result = register_agent(db_conn, name="drifted", agent_cwd=str(tmp_path))
+        assert result["name"] == "chosen"
+
+    def test_rename_preserves_created_at_and_metadata(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        first = register_agent(
+            db_conn,
+            name="old",
+            agent_cwd=str(tmp_path),
+            workstream="np",
+            description="does things",
+        )
+        result = rename_agent(db_conn, agent_cwd=str(tmp_path), name="new")
+        assert result["created_at"] == first["created_at"]
+        assert result["workstream"] == "np"
+        assert result["description"] == "does things"
+
+    def test_rename_unregistered_raises(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="not registered"):
+            rename_agent(db_conn, agent_cwd=str(tmp_path), name="new")
+
+    def test_rename_blank_name_rejected(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        register_agent(db_conn, name="old", agent_cwd=str(tmp_path))
+        with pytest.raises(ValueError):
+            rename_agent(db_conn, agent_cwd=str(tmp_path), name="   ")
+
+    def test_rename_resolves_via_alias(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        primary = tmp_path / "primary"
+        secondary = tmp_path / "secondary"
+        primary.mkdir()
+        secondary.mkdir()
+        register_agent(db_conn, name="old", agent_cwd=str(primary))
+        add_alias(db_conn, agent_cwd=str(primary), new_cwd=str(secondary))
+        rename_agent(db_conn, agent_cwd=str(secondary), name="renamed")
+        assert describe_agent(db_conn, agent_cwd=str(primary))["name"] == "renamed"
+
+    def test_rename_overlong_name_raises(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Name longer than _MAX_NAME_LEN (128) must raise with 'too long'."""
+        register_agent(db_conn, name="original", agent_cwd=str(tmp_path))
+        too_long = "x" * (_MAX_NAME_LEN + 1)
+        with pytest.raises(ValueError, match="too long"):
+            rename_agent(db_conn, agent_cwd=str(tmp_path), name=too_long)
+
+    def test_rename_whitespace_only_name_raises_with_message(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """Whitespace-only name must raise with 'name is required'."""
+        register_agent(db_conn, name="original", agent_cwd=str(tmp_path))
+        with pytest.raises(ValueError, match="name is required"):
+            rename_agent(db_conn, agent_cwd=str(tmp_path), name="   ")
 
 
 class TestAddAlias:
@@ -688,6 +791,7 @@ class TestToolRegistration:
         assert {
             "agent_register",
             "agent_describe",
+            "agent_rename",
             "agent_add_alias",
             "agent_list",
         } <= names
@@ -699,7 +803,12 @@ class TestToolRegistration:
             "memory_restore",
         } <= names
         assert {"todo_add", "todo_list", "todo_update"} <= names
-        assert {"blocker_open", "blocker_list", "blocker_resolve"} <= names
+        assert {
+            "blocker_open",
+            "blocker_list",
+            "blocker_resolve",
+            "blocker_escalate",
+        } <= names
         assert {
             "handover_save",
             "handover_latest",
@@ -707,6 +816,7 @@ class TestToolRegistration:
             "handover_claim",
             "handover_ack",
             "handover_release",
+            "handover_quarantined",
         } <= names
         assert {"inbox_send", "inbox_check", "inbox_ack"} <= names
         assert "memory_backup_now" in names
@@ -763,3 +873,37 @@ class TestToolRegistration:
             "summary",
             "body_md",
         ]
+
+    def test_new_tools_advertise_params_in_schema(self) -> None:
+        """blocker_escalate, handover_quarantined, and handover_claim must expose
+        their key parameters in the JSON inputSchema so agents can use them
+        correctly on the first call.
+        """
+        from mcp.server.fastmcp import FastMCP
+
+        probe = FastMCP(name="probe")
+        register_all_tools(probe)
+        import anyio
+
+        schemas = {t.name: t.inputSchema for t in anyio.run(probe.list_tools)}
+
+        def props(tool: str) -> dict:
+            return schemas[tool]["properties"]
+
+        # blocker_escalate advertises its optional reason param with a description
+        assert "reason" in props("blocker_escalate")
+        assert props("blocker_escalate")["reason"].get("description")
+
+        # handover_quarantined advertises limit / cursor / full
+        assert "limit" in props("handover_quarantined")
+        assert "cursor" in props("handover_quarantined")
+        assert "full" in props("handover_quarantined")
+
+        # handover_claim advertises full as a boolean param
+        assert "full" in props("handover_claim")
+        full_prop = props("handover_claim")["full"]
+        # FastMCP maps bool to "boolean" type; check the type or anyOf branches.
+        schema_types = {full_prop.get("type")} | {
+            b.get("type") for b in full_prop.get("anyOf", [])
+        }
+        assert "boolean" in schema_types

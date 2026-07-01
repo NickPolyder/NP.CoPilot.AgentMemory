@@ -18,9 +18,10 @@ is agent-controlled and must be treated as untrusted by downstream renderers.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
 from np_agent_memory.identity import (
@@ -34,6 +35,7 @@ from np_agent_memory.tools._common import (
     decode_cursor,
     encode_cursor,
     keyset_predicate,
+    require_agent_id,
     resolve_agent_id,
     truncate,
 )
@@ -88,14 +90,25 @@ def register_agent(
 
     First call for a canonical path mints a new ULID + agent + alias, defaulting
     ``name`` to the working directory's own name (preserving on-disk casing)
-    when none is supplied. Repeat calls update the agent's ``name`` /
-    ``workstream`` / ``description`` *only when provided* (``None`` never erases
-    a stored value, so an omitted name does not reset a customized one) and bump
-    ``updated_at``. Runs as a single ``BEGIN IMMEDIATE`` transaction, retried on
-    lock contention so a concurrent first-registration race resolves to one
-    agent.
+    when none is supplied.
+
+    The name is **sticky**: once an agent exists, re-registration never changes
+    its stored ``name`` — any ``name`` passed on a repeat call is ignored (not
+    an error), so agents can keep calling ``agent_register`` at session start
+    without flip-flopping their identity. Renaming is an explicit, user-driven
+    action via :func:`rename_agent` / the ``agent_rename`` tool.
+
+    Repeat calls still update ``workstream`` / ``description`` *only when
+    provided* (``None`` never erases a stored value) and bump ``updated_at``.
+    Runs as a single ``BEGIN IMMEDIATE`` transaction, retried on lock contention
+    so a concurrent first-registration race resolves to one agent.
     """
-    _validate_metadata(name=name, workstream=workstream, description=description)
+    # ``workstream``/``description`` apply on both the create and update paths, so
+    # validate them up front. ``name`` is validated lazily *only* on the
+    # new-agent path below: for an already-registered agent the sticky-name
+    # contract ignores any supplied name, so a blank/overlong name must not
+    # break an otherwise-idempotent session-start re-registration.
+    _validate_metadata(name=None, workstream=workstream, description=description)
     canonical = canonicalize_agent_cwd(agent_cwd)
 
     def _work(c: sqlite3.Connection) -> tuple[str, sqlite3.Row]:
@@ -104,11 +117,12 @@ def register_agent(
 
         if existing_agent_id is not None:
             agent_id = existing_agent_id
+            # Name is sticky: an already-registered agent keeps its stored name
+            # even if a (different) name is passed here. Renames are explicit,
+            # via rename_agent / the agent_rename tool. This stops agents from
+            # silently changing their own name on every session-start register.
             sets = ["updated_at = ?"]
             params: list[Any] = [ts]
-            if name is not None:
-                sets.append("name = ?")
-                params.append(name)
             if workstream is not None:
                 sets.append("workstream = ?")
                 params.append(workstream)
@@ -119,6 +133,7 @@ def register_agent(
             c.execute(f"UPDATE agents SET {', '.join(sets)} WHERE id = ?", params)
             registered = "existing"
         else:
+            _validate_metadata(name=name, workstream=None, description=None)
             agent_id = new_ulid()
             effective_name = name if name is not None else display_basename(agent_cwd)
             c.execute(
@@ -242,12 +257,7 @@ def add_alias(
     canonical_new = canonicalize_agent_cwd(new_cwd)
 
     def _work(c: sqlite3.Connection) -> bool:
-        agent_id = resolve_agent_id(c, canonical_src)
-        if agent_id is None:
-            raise ValueError(
-                f"agent_cwd is not registered: {canonical_src!r}. "
-                f"Call agent_register first."
-            )
+        agent_id = require_agent_id(c, canonical_src)
 
         existing_agent_id = resolve_agent_id(c, canonical_new)
         if existing_agent_id is not None:
@@ -270,6 +280,50 @@ def add_alias(
         "added": added,
         "canonical_path": canonical_src,
         "new_canonical_path": canonical_new,
+    }
+
+
+def rename_agent(
+    conn: sqlite3.Connection, *, agent_cwd: str, name: str
+) -> dict[str, Any]:
+    """Explicitly change a registered agent's ``name``.
+
+    This is the *only* path that changes a name after first registration:
+    ``register_agent`` treats the stored name as sticky and ignores any name it
+    is passed for an already-registered path. Use this when the user asks to
+    rename the agent.
+
+    ``agent_cwd`` is canonicalized in *lookup* mode (``require_exists=False``)
+    so a moved/renamed repo whose old path no longer exists on disk can still be
+    renamed via a stored alias. Raises if the path is unregistered or ``name``
+    is blank/too long.
+    """
+    if not name or not name.strip():
+        raise ValueError("name is required to rename an agent.")
+    _validate_metadata(name=name, workstream=None, description=None)
+    canonical = canonicalize_agent_cwd(agent_cwd, require_exists=False)
+
+    def _work(c: sqlite3.Connection) -> sqlite3.Row:
+        agent_id = require_agent_id(c, canonical)
+        c.execute(
+            "UPDATE agents SET name = ?, updated_at = ? WHERE id = ?",
+            (name, now_iso(), agent_id),
+        )
+        return c.execute(
+            "SELECT name, workstream, description, created_at, updated_at "
+            "FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+
+    agent = run_in_write_txn(conn, _work)
+    return {
+        "renamed": True,
+        "name": agent["name"],
+        "workstream": agent["workstream"],
+        "description": agent["description"],
+        "canonical_path": canonical,
+        "created_at": agent["created_at"],
+        "updated_at": agent["updated_at"],
     }
 
 
@@ -375,32 +429,48 @@ def register_agent_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def agent_register(
-        agent_cwd: str,
-        name: str | None = None,
-        workstream: str | None = None,
-        description: str | None = None,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        name: Annotated[
+            str | None,
+            Field(description="Optional name; only set on first registration."),
+        ] = None,
+        workstream: Annotated[
+            str | None,
+            Field(description="Optional workstream/grouping label."),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Field(description="Optional short description of this agent's role."),
+        ] = None,
     ) -> dict[str, Any]:
         """Register (or refresh) the calling agent for its working directory.
 
         Call this once at session start. It is idempotent: the first call for a
-        given repository root creates the agent; later calls update your name
-        and (when supplied) workstream/description. Omitted optional fields are
-        never cleared.
+        given repository root creates the agent; later calls update your
+        workstream/description (when supplied) and bump ``updated_at``. Omitted
+        optional fields are never cleared.
 
         Naming: if you omit ``name``, the server defaults it to the working
         directory's own name (e.g. ``NP.CoPilot.AgentMemory``) on first
         registration. Prefer that default — surface it to the user and ask
-        whether they want a different name before overriding it. On a later
-        call, omitting ``name`` preserves whatever is already stored (it will
-        not reset to the directory name), so only pass ``name`` when the user
-        wants to change it.
+        whether they want a different name before setting one.
+
+        Your name is **sticky**: once you are registered, ``agent_register``
+        will NOT change your name, even if you pass a different one — the value
+        is silently ignored. This keeps your identity stable across sessions.
+        To actually change your name, the user must ask for it, and you call
+        ``agent_rename``.
 
         Args:
             agent_cwd: Your absolute repository root. Use
                 ``git rev-parse --show-toplevel`` for git-backed agents.
-            name: Optional human-readable agent name. Defaults to the working
-                directory's name on first registration; omit on later calls to
-                keep the stored name.
+            name: Optional human-readable agent name. Only used on FIRST
+                registration (defaults to the working directory's name when
+                omitted); ignored on later calls. Use ``agent_rename`` to change
+                an existing name.
             workstream: Optional workstream/grouping label.
             description: Optional short description of this agent's role.
 
@@ -418,7 +488,12 @@ def register_agent_tools(mcp: FastMCP) -> None:
             )
 
     @mcp.tool()
-    def agent_describe(agent_cwd: str) -> dict[str, Any]:
+    def agent_describe(
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+    ) -> dict[str, Any]:
         """Describe the calling agent: metadata plus open-work counts.
 
         Args:
@@ -434,7 +509,50 @@ def register_agent_tools(mcp: FastMCP) -> None:
             return describe_agent(conn, agent_cwd=agent_cwd)
 
     @mcp.tool()
-    def agent_add_alias(agent_cwd: str, new_cwd: str) -> dict[str, Any]:
+    def agent_rename(
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        name: Annotated[
+            str,
+            Field(description="The new human-readable agent name (non-blank)."),
+        ],
+    ) -> dict[str, Any]:
+        """Change your registered name. Only use when the user asks for it.
+
+        ``agent_register`` treats your name as sticky and ignores any name you
+        pass once you are registered, so this is the ONLY way to rename an
+        already-registered agent. Do not call this on your own initiative —
+        rename only in response to an explicit user request.
+
+        Args:
+            agent_cwd: Your absolute repository root (same value you pass to
+                ``agent_register``). Resolved against stored aliases, so a moved
+                repo's old path still works.
+            name: The new human-readable agent name. Must be non-blank.
+
+        Returns:
+            The updated metadata plus ``renamed: true`` and the resolved
+            ``canonical_path``. Raises if the path is unregistered (call
+            ``agent_register`` first) or the name is invalid.
+        """
+        with open_connection() as conn:
+            return rename_agent(conn, agent_cwd=agent_cwd, name=name)
+
+    @mcp.tool()
+    def agent_add_alias(
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        new_cwd: Annotated[
+            str,
+            Field(
+                description="The additional absolute path to attach to the same agent."
+            ),
+        ],
+    ) -> dict[str, Any]:
         """Add another working-directory alias for an existing agent.
 
         Use when the same agent works from a second path (e.g. a new git
@@ -460,10 +578,22 @@ def register_agent_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def agent_list(
-        limit: int,
-        cursor: str | None = None,
-        workstream: str | None = None,
-        full: bool = False,
+        limit: Annotated[
+            int,
+            Field(description="Max agents to return this page (capped server-side)."),
+        ],
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque token from a previous call's next_cursor."),
+        ] = None,
+        workstream: Annotated[
+            str | None,
+            Field(description="Optional exact-match filter on workstream label."),
+        ] = None,
+        full: Annotated[
+            bool,
+            Field(description="Return untruncated description when true."),
+        ] = False,
     ) -> dict[str, Any]:
         """List registered agents (a global directory for discovery).
 

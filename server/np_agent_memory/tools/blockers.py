@@ -25,6 +25,7 @@ from np_agent_memory.tools._common import (
     require_agent_id,
     truncate,
 )
+from np_agent_memory.tools.memory import append_note
 
 # Mirrors the CHECK constraint on blockers.status. The Literal feeds the
 # JSON-schema enum; the derived tuple feeds runtime validation.
@@ -50,13 +51,19 @@ _BLOCKER_COLUMNS = (
 def _insert_blocker_note(
     c: sqlite3.Connection, agent_id: str, blocker_id: str, content: str
 ) -> None:
-    """Append a note about a blocker event, in the same transaction."""
-    c.execute(
-        "INSERT INTO notes "
-        "(id, agent_id, timestamp, category, topic, content, "
-        "related_type, related_id) "
-        "VALUES (?, ?, ?, 'note', 'blocker', ?, 'blocker', ?)",
-        (new_ulid(), agent_id, now_iso(), content, blocker_id),
+    """Append a note about a blocker event, in the same transaction.
+
+    Routes through the notes aggregate's writer (``memory.append_note``) so the
+    ``notes`` schema/category knowledge lives in one module.
+    """
+    append_note(
+        c,
+        agent_id=agent_id,
+        category="note",
+        topic="blocker",
+        content=content,
+        related_type="blocker",
+        related_id=blocker_id,
     )
 
 
@@ -251,17 +258,90 @@ def resolve_blocker(
     return _row_to_blocker(row, full=True)
 
 
+def escalate_blocker(
+    conn: sqlite3.Connection,
+    *,
+    agent_cwd: str,
+    blocker_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Escalate one of the agent's active blockers and auto-log a note.
+
+    Moves an ``active`` blocker to ``escalated`` (stamping ``escalated_at``) so
+    it stands out in ``blocker_list`` filters and the ``describe_agent`` active
+    count. Raises if the blocker is missing, already ``resolved``, or already
+    ``escalated`` (escalation is a one-way, deliberate signal — not idempotent
+    churn). ``reason`` is optional context folded into the timeline note.
+    """
+    if reason is not None and len(reason) > _MAX_RESOLUTION_LEN:
+        raise ValueError(f"reason is too long (max {_MAX_RESOLUTION_LEN} chars).")
+
+    canonical = canonicalize_agent_cwd(agent_cwd)
+
+    def _work(c: sqlite3.Connection) -> sqlite3.Row:
+        agent_id = require_agent_id(c, canonical)
+        existing = c.execute(
+            "SELECT id, title, status FROM blockers WHERE id = ? AND agent_id = ?",
+            (blocker_id, agent_id),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"blocker {blocker_id!r} not found for this agent.")
+        if existing["status"] == "resolved":
+            raise ValueError(f"blocker {blocker_id!r} is already resolved.")
+        if existing["status"] == "escalated":
+            raise ValueError(f"blocker {blocker_id!r} is already escalated.")
+
+        ts = now_iso()
+        c.execute(
+            "UPDATE blockers SET status = 'escalated', escalated_at = ? "
+            "WHERE id = ? AND agent_id = ?",
+            (ts, blocker_id, agent_id),
+        )
+        note = f"Blocker escalated: {existing['title']}"
+        if reason:
+            note = f"{note} — {reason}"
+        _insert_blocker_note(c, agent_id, blocker_id, note)
+        return c.execute(
+            f"SELECT {_BLOCKER_COLUMNS} FROM blockers WHERE id = ?",
+            (blocker_id,),
+        ).fetchone()
+
+    row = run_in_write_txn(conn, _work)
+    return _row_to_blocker(row, full=True)
+
+
 def register_blocker_tools(mcp: FastMCP) -> None:
     """Register the blocker tools on the FastMCP server."""
 
     @mcp.tool()
     def blocker_open(
-        agent_cwd: str,
-        title: str,
-        description: str | None = None,
-        owner: str | None = None,
-        workstream: str | None = None,
-        external_key: str | None = None,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        title: Annotated[
+            str,
+            Field(description="Short summary of what is blocked (non-empty)."),
+        ],
+        description: Annotated[
+            str | None,
+            Field(description="Optional longer detail."),
+        ] = None,
+        owner: Annotated[
+            str | None,
+            Field(description="Optional person/team responsible for unblocking."),
+        ] = None,
+        workstream: Annotated[
+            str | None,
+            Field(description="Optional workstream/grouping label."),
+        ] = None,
+        external_key: Annotated[
+            str | None,
+            Field(
+                description="Optional caller-supplied idempotency key, unique "
+                "per agent. Opening a second blocker with the same key raises."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Open a persistent blocker (starts in status "active").
 
@@ -345,9 +425,18 @@ def register_blocker_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def blocker_resolve(
-        agent_cwd: str,
-        blocker_id: str,
-        resolution: str | None = None,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        blocker_id: Annotated[
+            str,
+            Field(description="The id returned by blocker_open or blocker_list."),
+        ],
+        resolution: Annotated[
+            str | None,
+            Field(description="Optional note on how it was resolved."),
+        ] = None,
     ) -> dict[str, Any]:
         """Resolve one of your blockers and auto-log a note.
 
@@ -365,4 +454,42 @@ def register_blocker_tools(mcp: FastMCP) -> None:
                 agent_cwd=agent_cwd,
                 blocker_id=blocker_id,
                 resolution=resolution,
+            )
+
+    @mcp.tool()
+    def blocker_escalate(
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        blocker_id: Annotated[
+            str,
+            Field(description="The id returned by blocker_open or blocker_list."),
+        ],
+        reason: Annotated[
+            str | None,
+            Field(description="Optional context on why it is being escalated."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Escalate one of your active blockers and auto-log a note.
+
+        Use when a blocker needs attention beyond the current agent (e.g. it is
+        stuck and someone must intervene). Moves it from "active" to "escalated"
+        so it stands out in filters and the describe summary. Fails if the
+        blocker is already resolved or already escalated.
+
+        Args:
+            agent_cwd: Your absolute repository root (as registered).
+            blocker_id: The id returned by ``blocker_open`` / ``blocker_list``.
+            reason: Optional context on why it is being escalated.
+
+        Returns:
+            The full escalated blocker.
+        """
+        with open_connection() as conn:
+            return escalate_blocker(
+                conn,
+                agent_cwd=agent_cwd,
+                blocker_id=blocker_id,
+                reason=reason,
             )
