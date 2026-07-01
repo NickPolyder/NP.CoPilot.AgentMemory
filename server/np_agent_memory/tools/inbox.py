@@ -22,9 +22,11 @@ from np_agent_memory.tools._common import (
     decode_cursor,
     encode_cursor,
     keyset_predicate,
+    metadata_to_json,
     require_agent_id,
     resolve_agent_id,
     truncate,
+    validate_id_batch,
 )
 
 # The Literals feed the JSON-schema enums; the derived tuples feed runtime
@@ -41,15 +43,6 @@ _BODY_PREVIEW_LEN = 2_000
 _INBOX_COLUMNS = (
     "id, from_label, subject, body, priority, sent_at, read_at, acked_at, metadata_json"
 )
-
-
-def _metadata_to_json(metadata: dict[str, Any] | None) -> str | None:
-    """Serialize a metadata object to a compact JSON string, or ``None``."""
-    if metadata is None:
-        return None
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata must be an object (mapping), not a scalar/array.")
-    return json.dumps(metadata, separators=(",", ":"))
 
 
 def _validate_send(*, subject: str, body: str, priority: str) -> None:
@@ -127,7 +120,7 @@ def inbox_send(
     """Send an inbox message from the calling agent to another registered agent."""
     _validate_send(subject=subject, body=body, priority=priority)
     canonical = canonicalize_agent_cwd(agent_cwd)
-    metadata_json = _metadata_to_json(metadata)
+    metadata_json = metadata_to_json(metadata)
 
     def _work(c: sqlite3.Connection) -> tuple[str, str]:
         sender_id = require_agent_id(c, canonical)
@@ -224,10 +217,7 @@ def inbox_ack(
     """Mark this agent's inbox messages as read or acknowledged/archived."""
     if status not in _ACK_STATUSES:
         raise ValueError(f"status must be one of {_ACK_STATUSES}, got {status!r}.")
-    if not isinstance(message_ids, list) or not message_ids:
-        raise ValueError("message_ids must be a non-empty list.")
-    if not all(isinstance(message_id, str) for message_id in message_ids):
-        raise ValueError("message_ids must contain only strings.")
+    message_ids = validate_id_batch(message_ids, label="message_ids")
 
     canonical = canonicalize_agent_cwd(agent_cwd)
 
@@ -253,7 +243,7 @@ def inbox_ack(
         else:
             result = c.execute(
                 f"UPDATE inbox SET acked_at = ?, read_at = COALESCE(read_at, ?) "
-                f"WHERE to_agent_id = ? AND id IN ({marks})",
+                f"WHERE to_agent_id = ? AND acked_at IS NULL AND id IN ({marks})",
                 (ts, ts, agent_id, *message_ids),
             )
         return {"updated": result.rowcount, "not_found": not_found}
@@ -320,9 +310,18 @@ def register_inbox_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def inbox_check(
-        agent_cwd: str,
-        limit: int,
-        include_read: bool = False,
+        agent_cwd: Annotated[
+            str,
+            Field(description="Your absolute repository root, exactly as registered."),
+        ],
+        limit: Annotated[
+            int,
+            Field(description="Max messages to return (server-capped)."),
+        ],
+        include_read: Annotated[
+            bool,
+            Field(description="Include read-but-unacked messages when true."),
+        ] = False,
         cursor: str | None = None,
         full: bool = False,
     ) -> dict[str, Any]:

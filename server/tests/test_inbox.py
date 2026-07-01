@@ -400,6 +400,38 @@ def test_ack_read_then_acked_transitions_and_not_found(
     assert by_id[second["id"]]["acked_at"] is not None
 
 
+def test_ack_is_idempotent_for_acked_status(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    # A repeat ack must be a no-op: it must NOT re-stamp acked_at nor report a
+    # second update. (The "read" branch guards on read_at IS NULL; the "acked"
+    # branch must likewise guard on acked_at IS NULL.)
+    sender = _register(db_conn, tmp_path, "sender", "alice")
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+    sent = inbox_send(
+        db_conn,
+        agent_cwd=sender["cwd"],
+        to="bob",
+        subject="hello",
+        body="body",
+    )
+    msg_id = sent["id"]
+
+    first = inbox_ack(db_conn, agent_cwd=recipient["cwd"], message_ids=[msg_id])
+    assert first == {"updated": 1, "not_found": []}
+    first_acked_at = db_conn.execute(
+        "select acked_at from inbox where id = ?", (msg_id,)
+    ).fetchone()["acked_at"]
+
+    second = inbox_ack(db_conn, agent_cwd=recipient["cwd"], message_ids=[msg_id])
+    assert second == {"updated": 0, "not_found": []}
+    second_acked_at = db_conn.execute(
+        "select acked_at from inbox where id = ?", (msg_id,)
+    ).fetchone()["acked_at"]
+    assert second_acked_at == first_acked_at
+
+
 def test_priority_limit_and_status_validation(
     db_conn: sqlite3.Connection,
     tmp_path: Path,
