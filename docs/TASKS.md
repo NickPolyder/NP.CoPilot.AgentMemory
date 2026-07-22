@@ -28,6 +28,7 @@ dependency-ordered; several can run in parallel (noted in the plan).
 | D-linux | done ✅ | Cross-platform launcher — **resolved by D-uvx** (`uvx` is the single command on Windows/Linux/macOS; uv provisions Python). PyPI/`uvx np-agent-memory` remains a post-1.0 option | D-uvx |
 | E1 | done ✅ | Allow editing a todo's title in `todo_update` (add optional `title` param + validation + tests in `tools/todos.py`) | 4 |
 | E2 | done ✅ | Add `agent_list` — global, keyset-paginated directory of registered agents (public handles only, optional `workstream` filter, truncated `description` + `full`) for peer discovery before `inbox_send`, in `tools/agents.py` | 3 |
+| E3 | done ✅ | Add confirmed agent lifecycle controls — soft purge by default, irreversible hard purge with dependent-data cleanup, explicit unpurge, and soft-delete visibility filtering across agent, inbox, and handover surfaces | E2 |
 
 > **Phases 9–12 are cross-system handoffs** (files outside this repo). They are
 > **cancelled in this repo's tracking** — they are not the implementing agent's

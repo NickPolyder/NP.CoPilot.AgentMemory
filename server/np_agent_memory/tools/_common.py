@@ -73,18 +73,31 @@ def validate_id_batch(
     return list(dict.fromkeys(ids))
 
 
-def resolve_agent_id(conn: sqlite3.Connection, canonical_path: str) -> str | None:
+def resolve_agent_id(
+    conn: sqlite3.Connection,
+    canonical_path: str,
+    include_deleted: bool = False,
+) -> str | None:
     """Return the internal agent ULID for a canonical path, or ``None``.
 
     The single source of truth for "which agent owns this working directory".
     Callers run this inside their own transaction so the lookup shares the
     snapshot of the surrounding read/write unit.
     """
-    row = conn.execute(
-        "SELECT agent_id FROM agent_aliases WHERE alias_path = ?",
-        (canonical_path,),
-    ).fetchone()
-    return row["agent_id"] if row is not None else None
+    if include_deleted:
+        row = conn.execute(
+            "SELECT agent_id FROM agent_aliases WHERE alias_path = ?",
+            (canonical_path,),
+        ).fetchone()
+        return row["agent_id"] if row is not None else None
+    else:
+        row = conn.execute(
+            "SELECT aa.agent_id FROM agent_aliases aa "
+            "JOIN agents a ON aa.agent_id = a.id "
+            "WHERE aa.alias_path = ? AND a.deleted_at IS NULL",
+            (canonical_path,),
+        ).fetchone()
+        return row["agent_id"] if row is not None else None
 
 
 def require_agent_id(conn: sqlite3.Connection, canonical_path: str) -> str:

@@ -364,6 +364,12 @@ and supports cursor-based pagination. Large bodies (e.g., handover
 `body_md`) are truncated with a `truncated: true` flag unless the caller
 passes `full=true`.
 
+`agent_list`, `agent_purge`, and `agent_unpurge` are explicit exceptions:
+they are global trusted-local lifecycle/directory actions. Purge targets a
+canonical `target_cwd` rather than the caller and requires explicit user
+confirmation. Hard purge removes live-database rows; existing daily backups
+can retain prior snapshots until pruning.
+
 In the table below, `agent_cwd` is implied on every row-marked tool except
 `memory_backup_now` (server-scoped). If MCP `roots` capability turns out to
 be supported by the Copilot CLI (decision deferred to Phase 3), the server
@@ -376,6 +382,9 @@ keep working.
 | `agent_register`      | Idempotent upsert of (name, workstream) + alias for calling path   |
 | `agent_describe`      | Return calling agent's metadata + unread/todo/blocker counts       |
 | `agent_add_alias`     | Add another path alias for the same agent (e.g., new work-tree)    |
+| `agent_list`          | Global agent directory; soft-deleted entries require `show_deleted` |
+| `agent_purge`         | Confirmed soft or hard global lifecycle purge by target path        |
+| `agent_unpurge`       | Restore a soft-deleted agent by target path                         |
 | `agent_rekey`         | (Rare) merge two agents that got accidentally split                |
 | `memory_log`          | Insert a note (`category`, `topic`, `content`, related, meta)      |
 | `memory_query`        | List notes (filters: category, topic, since, limit, cursor)        |

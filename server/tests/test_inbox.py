@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 from np_agent_memory.db import open_connection
-from np_agent_memory.identity import canonicalize_agent_cwd
+from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
 from np_agent_memory.startup import init_db
-from np_agent_memory.tools.agents import register_agent
+from np_agent_memory.tools.agents import purge_agent, register_agent
 from np_agent_memory.tools.inbox import inbox_ack, inbox_check, inbox_send
 
 
@@ -470,3 +470,101 @@ def test_non_dict_metadata_raises(
             body="body",
             metadata=[1, 2],  # type: ignore[arg-type]
         )
+
+
+def test_soft_deleted_recipient_is_not_resolvable(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    sender = _register(db_conn, tmp_path, "sender", "alice")
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+    purge_agent(db_conn, target_cwd=recipient["cwd"], confirm=True)
+
+    with pytest.raises(ValueError, match="recipient not found"):
+        inbox_send(
+            db_conn,
+            agent_cwd=sender["cwd"],
+            to="bob",
+            subject="hello",
+            body="body",
+        )
+
+
+def test_messages_from_soft_deleted_sender_are_hidden(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    sender = _register(db_conn, tmp_path, "sender", "alice")
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+    inbox_send(
+        db_conn,
+        agent_cwd=sender["cwd"],
+        to="bob",
+        subject="hello",
+        body="body",
+    )
+    purge_agent(db_conn, target_cwd=sender["cwd"], confirm=True)
+
+    assert inbox_check(db_conn, agent_cwd=recipient["cwd"], limit=10)["messages"] == []
+
+
+def test_ack_returns_not_found_without_marking_message_from_soft_deleted_sender(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    sender = _register(db_conn, tmp_path, "sender", "alice")
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+    message = inbox_send(
+        db_conn,
+        agent_cwd=sender["cwd"],
+        to="bob",
+        subject="hidden",
+        body="body",
+    )
+    purge_agent(db_conn, target_cwd=sender["cwd"], confirm=True)
+
+    # Act
+    result = inbox_ack(db_conn, agent_cwd=recipient["cwd"], message_ids=[message["id"]])
+    stored = db_conn.execute(
+        "SELECT read_at, acked_at FROM inbox WHERE id = ?", (message["id"],)
+    ).fetchone()
+
+    # Assert
+    assert (result, tuple(stored)) == (
+        {"updated": 0, "not_found": [message["id"]]},
+        (None, None),
+    )
+
+
+def test_ack_marks_system_message_without_sender_normally(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+    message_id = new_ulid()
+    db_conn.execute(
+        "INSERT INTO inbox (id, to_agent_id, subject, body, sent_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            message_id,
+            _agent_id_for(db_conn, recipient["cwd"]),
+            "system",
+            "body",
+            now_iso(),
+        ),
+    )
+
+    # Act
+    result = inbox_ack(db_conn, agent_cwd=recipient["cwd"], message_ids=[message_id])
+    stored = db_conn.execute(
+        "SELECT read_at, acked_at FROM inbox WHERE id = ?", (message_id,)
+    ).fetchone()
+
+    # Assert
+    assert (
+        result == {"updated": 1, "not_found": []}
+        and stored["read_at"] is not None
+        and stored["acked_at"] is not None
+    )

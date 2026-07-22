@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from np_agent_memory.db import open_connection
 from np_agent_memory.startup import init_db
-from np_agent_memory.tools.agents import register_agent
+from np_agent_memory.tools.agents import purge_agent, register_agent
 from np_agent_memory.tools.handovers import (
     _BODY_PREVIEW_LEN,
     _MAX_CLAIM_ATTEMPTS,
@@ -349,6 +349,101 @@ class TestQuarantine:
             cursor = page["next_cursor"]
         assert page["next_cursor"] is None
         assert sorted(seen) == sorted(ids)
+
+
+# ---------------------------------------------------------------------------
+# soft-deleted agents are absent from global consumer surfaces
+# ---------------------------------------------------------------------------
+
+
+class TestSoftDeletedAgentVisibility:
+    def test_claim_excludes_soft_deleted_agent_handover(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        save_handover(db_conn, agent_cwd=agent_cwd, summary="hidden", body_md="body")
+        purge_agent(db_conn, target_cwd=agent_cwd, confirm=True)
+
+        assert (
+            claim_handovers(db_conn, consumer_id="ingest", limit=10)["handovers"] == []
+        )
+
+    def test_quarantined_list_excludes_soft_deleted_agent_handover(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        handover = save_handover(
+            db_conn, agent_cwd=agent_cwd, summary="hidden", body_md="body"
+        )
+        claim_handovers(db_conn, consumer_id="ingest", limit=10)
+        db_conn.execute(
+            "UPDATE handovers SET attempt_count = ? WHERE id = ?",
+            (_MAX_CLAIM_ATTEMPTS, handover["id"]),
+        )
+        release_handovers(db_conn, consumer_id="ingest", ids=[handover["id"]])
+        purge_agent(db_conn, target_cwd=agent_cwd, confirm=True)
+
+        assert list_quarantined_handovers(db_conn, limit=10)["handovers"] == []
+
+    def test_ack_skips_claimed_handover_after_owner_is_soft_deleted(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        # Arrange
+        handover = save_handover(
+            db_conn, agent_cwd=agent_cwd, summary="hidden", body_md="body"
+        )
+        claim_handovers(db_conn, consumer_id="ingest", limit=10)
+        purge_agent(db_conn, target_cwd=agent_cwd, confirm=True)
+
+        # Act
+        result = ack_handovers(db_conn, consumer_id="ingest", ids=[handover["id"]])
+        stored = db_conn.execute(
+            "SELECT consumed_at FROM handovers WHERE id = ?", (handover["id"],)
+        ).fetchone()
+
+        # Assert
+        assert (result, stored["consumed_at"]) == (
+            {"acked": 0, "acked_ids": [], "skipped": [handover["id"]]},
+            None,
+        )
+
+    def test_release_skips_claimed_handover_after_owner_is_soft_deleted(
+        self, db_conn: sqlite3.Connection, agent_cwd: str
+    ) -> None:
+        # Arrange
+        handover = save_handover(
+            db_conn, agent_cwd=agent_cwd, summary="hidden", body_md="body"
+        )
+        claim_handovers(db_conn, consumer_id="ingest", limit=10)
+        before = db_conn.execute(
+            "SELECT claimed_at, claimed_by, last_error, quarantined_at "
+            "FROM handovers WHERE id = ?",
+            (handover["id"],),
+        ).fetchone()
+        purge_agent(db_conn, target_cwd=agent_cwd, confirm=True)
+
+        # Act
+        result = release_handovers(
+            db_conn,
+            consumer_id="ingest",
+            ids=[handover["id"]],
+            last_error="should not be saved",
+        )
+        after = db_conn.execute(
+            "SELECT claimed_at, claimed_by, last_error, quarantined_at "
+            "FROM handovers WHERE id = ?",
+            (handover["id"],),
+        ).fetchone()
+
+        # Assert
+        assert (result, tuple(after)) == (
+            {
+                "released": 0,
+                "released_ids": [],
+                "quarantined": 0,
+                "quarantined_ids": [],
+                "skipped": [handover["id"]],
+            },
+            tuple(before),
+        )
 
 
 # ---------------------------------------------------------------------------

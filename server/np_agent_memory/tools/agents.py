@@ -21,7 +21,7 @@ import sqlite3
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
 from np_agent_memory.identity import (
@@ -100,6 +100,8 @@ def register_agent(
 
     Repeat calls still update ``workstream`` / ``description`` *only when
     provided* (``None`` never erases a stored value) and bump ``updated_at``.
+    A soft-deleted identity is never revived implicitly: registration raises
+    with an instruction to use :func:`unpurge_agent` instead.
     Runs as a single ``BEGIN IMMEDIATE`` transaction, retried on lock contention
     so a concurrent first-registration race resolves to one agent.
     """
@@ -112,10 +114,18 @@ def register_agent(
     canonical = canonicalize_agent_cwd(agent_cwd)
 
     def _work(c: sqlite3.Connection) -> tuple[str, sqlite3.Row]:
-        existing_agent_id = resolve_agent_id(c, canonical)
+        existing_agent_id = resolve_agent_id(c, canonical, include_deleted=True)
         ts = now_iso()
 
         if existing_agent_id is not None:
+            existing = c.execute(
+                "SELECT deleted_at FROM agents WHERE id = ?",
+                (existing_agent_id,),
+            ).fetchone()
+            if existing is not None and existing["deleted_at"] is not None:
+                raise ValueError(
+                    "agent is soft-deleted. Call agent_unpurge before registering it."
+                )
             agent_id = existing_agent_id
             # Name is sticky: an already-registered agent keeps its stored name
             # even if a (different) name is passed here. Renames are explicit,
@@ -200,7 +210,10 @@ def describe_agent(conn: sqlite3.Connection, *, agent_cwd: str) -> dict[str, Any
         blocker_marks = ", ".join("?" for _ in _ACTIVE_BLOCKER_STATUSES)
 
         unread = c.execute(
-            "SELECT COUNT(*) FROM inbox WHERE to_agent_id = ? AND read_at IS NULL",
+            "SELECT COUNT(*) FROM inbox i "
+            "LEFT JOIN agents sender ON sender.id = i.from_agent_id "
+            "WHERE i.to_agent_id = ? AND i.read_at IS NULL "
+            "AND (i.from_agent_id IS NULL OR sender.deleted_at IS NULL)",
             (agent_id,),
         ).fetchone()[0]
         open_todos = c.execute(
@@ -259,7 +272,7 @@ def add_alias(
     def _work(c: sqlite3.Connection) -> bool:
         agent_id = require_agent_id(c, canonical_src)
 
-        existing_agent_id = resolve_agent_id(c, canonical_new)
+        existing_agent_id = resolve_agent_id(c, canonical_new, include_deleted=True)
         if existing_agent_id is not None:
             if existing_agent_id == agent_id:
                 return False  # already an alias of this agent — no-op
@@ -339,7 +352,7 @@ def _row_to_agent_summary(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
     truncated = False
     if description is not None and not full:
         description, truncated = truncate(description, _DESCRIPTION_PREVIEW_LEN)
-    return {
+    summary: dict[str, Any] = {
         "name": row["name"],
         "workstream": row["workstream"],
         "description": description,
@@ -347,6 +360,128 @@ def _row_to_agent_summary(row: sqlite3.Row, *, full: bool) -> dict[str, Any]:
         "canonical_path": row["canonical_path"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+    }
+    if row["deleted_at"] is not None:
+        summary["deleted_at"] = row["deleted_at"]
+    return summary
+
+
+def _empty_purge_counts() -> dict[str, int]:
+    """Return the public count shape used by agent lifecycle operations."""
+    return {
+        "agents": 0,
+        "aliases": 0,
+        "notes": 0,
+        "todos": 0,
+        "blockers": 0,
+        "inbox": 0,
+        "handovers": 0,
+    }
+
+
+def purge_agent(
+    conn: sqlite3.Connection,
+    *,
+    target_cwd: str,
+    hard: bool = False,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Purge an agent after explicit confirmation, soft-deleting by default.
+
+    ``target_cwd`` is canonicalized in lookup mode so an already-registered
+    alias remains purgeable after its directory is moved or removed. A soft
+    purge stamps ``deleted_at`` and preserves all data for
+    :func:`unpurge_agent`; a hard purge irreversibly removes the agent and all
+    dependent data in one retried write transaction.
+    """
+    if confirm is not True:
+        raise ValueError(
+            "agent_purge requires confirm=true after explicit user confirmation."
+        )
+    if not isinstance(hard, bool):
+        raise ValueError("hard must be a boolean.")
+
+    canonical = canonicalize_agent_cwd(target_cwd, require_exists=False)
+    mode = "hard" if hard else "soft"
+
+    def _work(c: sqlite3.Connection) -> tuple[str, str | None, dict[str, int]]:
+        agent_id = resolve_agent_id(c, canonical, include_deleted=True)
+        counts = _empty_purge_counts()
+        if agent_id is None:
+            return "not_found", None, counts
+
+        agent = c.execute(
+            "SELECT deleted_at FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+        if agent is None:
+            return "not_found", None, counts
+
+        if not hard:
+            if agent["deleted_at"] is not None:
+                return "already_soft_deleted", agent["deleted_at"], counts
+            deleted_at = now_iso()
+            c.execute(
+                "UPDATE agents SET deleted_at = ?, updated_at = ? WHERE id = ?",
+                (deleted_at, deleted_at, agent_id),
+            )
+            counts["agents"] = 1
+            return "soft_deleted", deleted_at, counts
+
+        counts["aliases"] = c.execute(
+            "SELECT COUNT(*) FROM agent_aliases WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0]
+        for table in ("notes", "todos", "blockers", "handovers"):
+            result = c.execute(f"DELETE FROM {table} WHERE agent_id = ?", (agent_id,))
+            counts[table] = result.rowcount
+        result = c.execute(
+            "DELETE FROM inbox WHERE from_agent_id = ? OR to_agent_id = ?",
+            (agent_id, agent_id),
+        )
+        counts["inbox"] = result.rowcount
+        result = c.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        counts["agents"] = result.rowcount
+        return "hard_deleted", None, counts
+
+    status, deleted_at, counts = run_in_write_txn(conn, _work)
+    return {
+        "mode": mode,
+        "status": status,
+        "canonical_path": canonical,
+        "deleted_at": deleted_at,
+        "counts": counts,
+    }
+
+
+def unpurge_agent(conn: sqlite3.Connection, *, target_cwd: str) -> dict[str, Any]:
+    """Restore a soft-deleted agent and make its persisted data visible again."""
+    canonical = canonicalize_agent_cwd(target_cwd, require_exists=False)
+
+    def _work(c: sqlite3.Connection) -> tuple[str, str | None]:
+        agent_id = resolve_agent_id(c, canonical, include_deleted=True)
+        if agent_id is None:
+            return "not_found", None
+        agent = c.execute(
+            "SELECT deleted_at FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+        if agent is None:
+            return "not_found", None
+        if agent["deleted_at"] is None:
+            return "active", None
+
+        c.execute(
+            "UPDATE agents SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+            (now_iso(), agent_id),
+        )
+        return "restored", agent["deleted_at"]
+
+    status, previous_deleted_at = run_in_write_txn(conn, _work)
+    return {
+        "status": status,
+        "canonical_path": canonical,
+        "previous_deleted_at": previous_deleted_at,
     }
 
 
@@ -357,6 +492,7 @@ def list_agents(
     cursor: str | None = None,
     workstream: str | None = None,
     full: bool = False,
+    show_deleted: bool = False,
 ) -> dict[str, Any]:
     """Return a keyset-paginated directory of all registered agents.
 
@@ -368,7 +504,8 @@ def list_agents(
     or returned, including inside the opaque pagination cursor (hard rule:
     agents never see internal IDs).
 
-    Newest-first by ``(created_at, canonical_path)`` for a stable keyset window:
+    Soft-deleted agents are omitted unless ``show_deleted=True``. Newest-first
+    by ``(created_at, canonical_path)`` for a stable keyset window:
     ``canonical_path`` is an ``agent_aliases`` primary key, so it is globally
     unique and breaks ``created_at`` ties without exposing the ULID. An optional
     ``workstream`` applies an exact-match filter.
@@ -383,6 +520,8 @@ def list_agents(
     def _work(c: sqlite3.Connection) -> list[sqlite3.Row]:
         clauses: list[str] = []
         params: list[Any] = []
+        if not show_deleted:
+            clauses.append("deleted_at IS NULL")
         if workstream is not None:
             clauses.append("workstream = ?")
             params.append(workstream)
@@ -399,9 +538,10 @@ def list_agents(
         # resolve the representative alias; it is never SELECTed into the outer
         # result, so it cannot reach the projection or the cursor.
         return c.execute(
-            "SELECT name, workstream, description, created_at, updated_at, "
+            "SELECT name, workstream, description, created_at, updated_at, deleted_at, "
             "canonical_path FROM ("
             "  SELECT name, workstream, description, created_at, updated_at, "
+            "deleted_at, "
             "    (SELECT alias_path FROM agent_aliases "
             "       WHERE agent_id = agents.id "
             "       ORDER BY created_at ASC, alias_path ASC LIMIT 1) "
@@ -463,6 +603,9 @@ def register_agent_tools(mcp: FastMCP) -> None:
         is silently ignored. This keeps your identity stable across sessions.
         To actually change your name, the user must ask for it, and you call
         ``agent_rename``.
+
+        Registration never revives a soft-deleted agent. Use ``agent_unpurge``
+        explicitly to restore that identity and its preserved data.
 
         Args:
             agent_cwd: Your absolute repository root. Use
@@ -594,14 +737,24 @@ def register_agent_tools(mcp: FastMCP) -> None:
             bool,
             Field(description="Return untruncated description when true."),
         ] = False,
+        show_deleted: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Include soft-deleted agents when true; deleted entries are "
+                    "marked with deleted_at."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         """List registered agents (a global directory for discovery).
 
         Use this to find peers to coordinate with — e.g. before ``inbox_send``
         when you know a workstream but not the exact agent name. Unlike the other
         agent tools this is NOT scoped to you and takes no ``agent_cwd``; it
-        returns every registered agent, newest first. Internal IDs are never
-        exposed.
+        returns every active agent, newest first. Pass ``show_deleted=true`` to
+        include soft-deleted entries, which are marked with ``deleted_at``.
+        Internal IDs are never exposed.
 
         Results are keyset-paginated: each call returns at most ``limit`` agents
         (server-capped) plus ``next_cursor``; pass it back as ``cursor`` to page.
@@ -613,12 +766,14 @@ def register_agent_tools(mcp: FastMCP) -> None:
             cursor: Opaque token from a previous call's ``next_cursor``.
             workstream: Optional exact-match filter on the workstream label.
             full: Return untruncated ``description`` when true.
+            show_deleted: Include soft-deleted agents when true.
 
         Returns:
             ``agents`` (each with ``name``, ``workstream``, ``description``,
             ``description_truncated``, ``canonical_path``, ``created_at`` and
             ``updated_at``), ``count`` and ``next_cursor`` (null when there is no
-            further page).
+            further page). Soft-deleted entries included via ``show_deleted``
+            also carry ``deleted_at``.
         """
         with open_connection() as conn:
             return list_agents(
@@ -627,4 +782,95 @@ def register_agent_tools(mcp: FastMCP) -> None:
                 cursor=cursor,
                 workstream=workstream,
                 full=full,
+                show_deleted=show_deleted,
             )
+
+    @mcp.tool()
+    def agent_purge(
+        target_cwd: Annotated[
+            str,
+            Field(
+                description=(
+                    "Registered agent path to purge. It may be a stored alias "
+                    "whose directory no longer exists."
+                )
+            ),
+        ],
+        hard: Annotated[
+            StrictBool,
+            Field(
+                description=(
+                    "false (default) soft-deletes reversibly. true permanently "
+                    "removes the agent and associated data from the live database; "
+                    "existing backups can retain prior snapshots until pruning."
+                )
+            ),
+        ] = False,
+        confirm: Annotated[
+            StrictBool,
+            Field(
+                description=(
+                    "Must be the boolean true, and only after explicit user "
+                    "confirmation of the requested purge mode."
+                )
+            ),
+        ] = False,
+    ) -> dict[str, Any]:
+        """Purge a registered agent after explicit user confirmation.
+
+        This is a global lifecycle action, not scoped to the caller. The default
+        soft purge hides the agent and all agent-scoped data while preserving it
+        for ``agent_unpurge``. ``hard=true`` permanently deletes the agent,
+        aliases, notes, todos, blockers, sent/received inbox messages, and
+        handovers from the live database. Existing daily backups can retain
+        prior snapshots until pruning. **Do not call either mode until the user
+        has explicitly confirmed it; the tool rejects calls without
+        ``confirm=true``.**
+
+        Args:
+            target_cwd: Registered agent path (including a moved/deleted alias).
+            hard: Permanently delete live-database data instead of soft-deleting;
+                prior backups can retain snapshots until pruning.
+            confirm: Required strict boolean confirmation after the user agrees.
+
+        Returns:
+            The purge ``mode``, idempotent ``status``, canonical target path,
+            soft-deletion timestamp when applicable, and public affected-row
+            ``counts``. Internal agent IDs are never returned.
+        """
+        with open_connection() as conn:
+            return purge_agent(
+                conn,
+                target_cwd=target_cwd,
+                hard=hard,
+                confirm=confirm,
+            )
+
+    @mcp.tool()
+    def agent_unpurge(
+        target_cwd: Annotated[
+            str,
+            Field(
+                description=(
+                    "Soft-deleted agent path to restore. It may be a stored alias "
+                    "whose directory no longer exists."
+                )
+            ),
+        ],
+    ) -> dict[str, Any]:
+        """Restore a soft-deleted agent and make its preserved data visible.
+
+        Hard-deleted agents cannot be recovered. This is a global lifecycle
+        action and is deliberately separate from ``agent_register`` so
+        registration never revives a deleted identity implicitly.
+
+        Args:
+            target_cwd: Soft-deleted agent path (including a moved/deleted alias).
+
+        Returns:
+            A ``status`` of ``restored``, ``active`` (already active), or
+            ``not_found`` (including hard-deleted agents), plus public path and
+            prior soft-deletion timestamp. Internal agent IDs are never returned.
+        """
+        with open_connection() as conn:
+            return unpurge_agent(conn, target_cwd=target_cwd)

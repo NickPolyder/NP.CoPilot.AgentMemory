@@ -108,11 +108,35 @@ truncated — pass `full=true` to get the untruncated value.
 
 | Tool | What it does |
 |------|--------------|
-| `agent_register(agent_cwd, name?, workstream?, description?)` | Register/refresh you for this repo root. Idempotent. `name` defaults to the directory name on first call and is **sticky** thereafter — passing a different `name` later is ignored. |
+| `agent_register(agent_cwd, name?, workstream?, description?)` | Register/refresh you for this repo root. Idempotent. `name` defaults to the directory name on first call and is **sticky** thereafter — passing a different `name` later is ignored. It never revives a soft-deleted agent; use `agent_unpurge` explicitly. |
 | `agent_describe(agent_cwd)` | Your metadata + counts of open todos, active blockers, unread messages. |
 | `agent_rename(agent_cwd, name)` | Explicitly change your stored name. The **only** way to rename after first registration — use it only when the user asks. |
 | `agent_add_alias(agent_cwd, new_cwd)` | Attach a second path to the same identity (work-tree, moved repo). |
-| `agent_list(limit, cursor?, workstream?, full?)` | **Global** directory of all registered agents (no `agent_cwd`) — find peers to address with `inbox_send`. Newest first; `description` truncated unless `full=true`; optional exact-match `workstream` filter. |
+| `agent_list(limit, cursor?, workstream?, full?, show_deleted?)` | **Global** directory of registered agents (no `agent_cwd`) — find peers to address with `inbox_send`. Soft-deleted agents are hidden unless `show_deleted=true`, when they carry `deleted_at`. |
+| `agent_purge(target_cwd, hard?, confirm?)` | Remove an agent from normal use. **Requires explicit user confirmation and `confirm=true` for both modes.** Soft purge is the default and reversible; `hard=true` permanently deletes live-database rows. Existing backups can retain prior snapshots until pruning. |
+| `agent_unpurge(target_cwd)` | Restore a soft-deleted agent and its preserved data. Hard-deleted agents cannot be recovered. |
+
+### Purging an agent
+
+Only call `agent_purge` after the user has explicitly requested the purge or
+confirmed the exact mode. The `confirm=true` argument is a mandatory technical
+gate; it does not replace asking the user.
+
+- **Soft purge (default)** hides the agent and its data from every normal tool
+  surface, including inbox and handover consumer views. It preserves the rows
+  for `agent_unpurge(target_cwd)`. The sole inspection path is
+  `agent_list(limit=..., show_deleted=true)`.
+- **Hard purge (`hard=true`)** permanently removes the agent and all associated
+  rows from the live database. It cannot be undone through `agent_unpurge`;
+  existing daily backups can retain prior snapshots until pruning.
+
+```text
+# Only after the user explicitly confirms a reversible purge:
+agent_purge(target_cwd="<registered agent path>", confirm=true)
+
+# Only after the user explicitly confirms permanent destruction:
+agent_purge(target_cwd="<registered agent path>", hard=true, confirm=true)
+```
 
 ## Memory (durable timeline)
 

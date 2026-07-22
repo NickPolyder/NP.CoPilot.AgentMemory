@@ -495,6 +495,63 @@ class TestRunMigrations:
         finally:
             conn.close()
 
+    def test_upgrade_from_shipped_0003_preserves_agents_and_adds_alive_index(
+        self, tmp_path: Path
+    ) -> None:
+        """A real pre-0004 database upgrades its existing agent rows safely."""
+        import np_agent_memory.migrations as migrations
+
+        db_path = tmp_path / "test.db"
+        through_0003 = [
+            migration
+            for migration in migrations._discover_migrations()
+            if migration[0] <= 3
+        ]
+        with patch.object(
+            migrations, "_discover_migrations", return_value=through_0003
+        ):
+            run_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO agents "
+                "(id, name, workstream, description, created_at, updated_at) "
+                "VALUES ('legacy-agent', 'Legacy', 'migration', 'preserve me', "
+                "'2026-01-01T00:00:00+00:00', '2026-01-02T00:00:00+00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        run_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            agent = conn.execute(
+                "SELECT name, workstream, description, created_at, updated_at, "
+                "deleted_at "
+                "FROM agents WHERE id = 'legacy-agent'"
+            ).fetchone()
+            alive_index = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_agents_created_at_alive'"
+            ).fetchone()
+
+            assert (agent, alive_index) == (
+                (
+                    "Legacy",
+                    "migration",
+                    "preserve me",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-02T00:00:00+00:00",
+                    None,
+                ),
+                ("idx_agents_created_at_alive",),
+            )
+        finally:
+            conn.close()
+
 
 class TestMultipleMigrations:
     """run_migrations across more than one migration file (the apply loop)."""

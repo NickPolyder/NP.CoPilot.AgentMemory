@@ -129,8 +129,8 @@ copilot plugin install np-agent-memory@np-agent-memory-marketplace
 Then, from a fresh CLI session, smoke-test:
 `agent_register` → `agent_describe` → `agent_add_alias` round-trip, and confirm
 `install.ps1` self-verify passed. If you registered any throwaway agents during
-testing, delete them from the production DB
-(`$HOME\.copilot\np-agent-memory\agent-memory.db`) before wrapping.
+testing, remove them through the confirmed lifecycle tool:
+`agent_purge(target_cwd, hard=true, confirm=true)`.
 
 ---
 

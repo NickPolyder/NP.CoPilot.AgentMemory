@@ -41,7 +41,8 @@ _MAX_BODY_LEN = 65_536
 _BODY_PREVIEW_LEN = 2_000
 
 _INBOX_COLUMNS = (
-    "id, from_label, subject, body, priority, sent_at, read_at, acked_at, metadata_json"
+    "i.id, i.from_label, i.subject, i.body, i.priority, i.sent_at, i.read_at, "
+    "i.acked_at, i.metadata_json"
 )
 
 
@@ -71,7 +72,7 @@ def _resolve_recipient(conn: sqlite3.Connection, to: str) -> str:
             return agent_id
 
     rows = conn.execute(
-        "SELECT id FROM agents WHERE name = ? ORDER BY id",
+        "SELECT id FROM agents WHERE name = ? AND deleted_at IS NULL ORDER BY id",
         (to,),
     ).fetchall()
     if len(rows) == 1:
@@ -125,7 +126,7 @@ def inbox_send(
     def _work(c: sqlite3.Connection) -> tuple[str, str]:
         sender_id = require_agent_id(c, canonical)
         sender = c.execute(
-            "SELECT name FROM agents WHERE id = ?",
+            "SELECT name FROM agents WHERE id = ? AND deleted_at IS NULL",
             (sender_id,),
         ).fetchone()
         to_agent_id = _resolve_recipient(c, to)
@@ -177,21 +178,27 @@ def inbox_check(
 
     def _work(c: sqlite3.Connection) -> list[sqlite3.Row]:
         agent_id = require_agent_id(c, canonical)
-        clauses = ["to_agent_id = ?", "acked_at IS NULL"]
+        clauses = [
+            "i.to_agent_id = ?",
+            "i.acked_at IS NULL",
+            "(i.from_agent_id IS NULL OR sender.deleted_at IS NULL)",
+        ]
         params: list[Any] = [agent_id]
         if not include_read:
-            clauses.append("read_at IS NULL")
+            clauses.append("i.read_at IS NULL")
         if cursor_key is not None:
             frag, frag_params = keyset_predicate(
-                [("sent_at", cursor_key[0]), ("id", cursor_key[1])],
+                [("i.sent_at", cursor_key[0]), ("i.id", cursor_key[1])],
                 direction="<",
             )
             clauses.append(frag)
             params.extend(frag_params)
         params.append(limit + 1)
         return c.execute(
-            f"SELECT {_INBOX_COLUMNS} FROM inbox WHERE {' AND '.join(clauses)} "
-            f"ORDER BY sent_at DESC, id DESC LIMIT ?",
+            f"SELECT {_INBOX_COLUMNS} FROM inbox i "
+            f"LEFT JOIN agents sender ON sender.id = i.from_agent_id "
+            f"WHERE {' AND '.join(clauses)} "
+            f"ORDER BY i.sent_at DESC, i.id DESC LIMIT ?",
             params,
         ).fetchall()
 
@@ -225,7 +232,10 @@ def inbox_ack(
         agent_id = require_agent_id(c, canonical)
         marks = ", ".join("?" for _ in message_ids)
         found_rows = c.execute(
-            f"SELECT id FROM inbox WHERE to_agent_id = ? AND id IN ({marks})",
+            f"SELECT i.id FROM inbox i "
+            f"LEFT JOIN agents sender ON sender.id = i.from_agent_id "
+            f"WHERE i.to_agent_id = ? AND i.id IN ({marks}) "
+            f"AND (i.from_agent_id IS NULL OR sender.deleted_at IS NULL)",
             (agent_id, *message_ids),
         ).fetchall()
         found_ids = {row["id"] for row in found_rows}
@@ -237,13 +247,17 @@ def inbox_ack(
         if status == "read":
             result = c.execute(
                 f"UPDATE inbox SET read_at = ? "
-                f"WHERE to_agent_id = ? AND read_at IS NULL AND id IN ({marks})",
+                f"WHERE to_agent_id = ? AND read_at IS NULL AND id IN ({marks}) "
+                f"AND (from_agent_id IS NULL OR from_agent_id IN "
+                f"(SELECT id FROM agents WHERE deleted_at IS NULL))",
                 (ts, agent_id, *message_ids),
             )
         else:
             result = c.execute(
                 f"UPDATE inbox SET acked_at = ?, read_at = COALESCE(read_at, ?) "
-                f"WHERE to_agent_id = ? AND acked_at IS NULL AND id IN ({marks})",
+                f"WHERE to_agent_id = ? AND acked_at IS NULL AND id IN ({marks}) "
+                f"AND (from_agent_id IS NULL OR from_agent_id IN "
+                f"(SELECT id FROM agents WHERE deleted_at IS NULL))",
                 (ts, ts, agent_id, *message_ids),
             )
         return {"updated": result.rowcount, "not_found": not_found}

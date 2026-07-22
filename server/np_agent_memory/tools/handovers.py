@@ -272,11 +272,13 @@ def claim_handovers(
         now = now_iso()
         cutoff = (datetime.now(UTC) - timedelta(minutes=stale_minutes)).isoformat()
         candidates = c.execute(
-            "SELECT id FROM handovers "
-            "WHERE consumed_at IS NULL "
-            "  AND quarantined_at IS NULL "
-            "  AND (claimed_at IS NULL OR claimed_at < ?) "
-            "ORDER BY saved_at ASC, id ASC LIMIT ?",
+            "SELECT h.id FROM handovers h "
+            "JOIN agents a ON a.id = h.agent_id "
+            "WHERE a.deleted_at IS NULL "
+            "  AND h.consumed_at IS NULL "
+            "  AND h.quarantined_at IS NULL "
+            "  AND (h.claimed_at IS NULL OR h.claimed_at < ?) "
+            "ORDER BY h.saved_at ASC, h.id ASC LIMIT ?",
             (cutoff, limit),
         ).fetchall()
         ids = [r["id"] for r in candidates]
@@ -292,7 +294,7 @@ def claim_handovers(
             f"SELECT h.{', h.'.join(_HANDOVER_COLUMNS.split(', '))}, "
             f"a.name AS agent_name "
             f"FROM handovers h JOIN agents a ON a.id = h.agent_id "
-            f"WHERE h.id IN ({placeholders}) "
+            f"WHERE h.id IN ({placeholders}) AND a.deleted_at IS NULL "
             f"ORDER BY h.saved_at ASC, h.id ASC",
             ids,
         ).fetchall()
@@ -315,7 +317,12 @@ def ack_handovers(
         for hid in ids:
             cur = c.execute(
                 "UPDATE handovers SET consumed_at = ? "
-                "WHERE id = ? AND claimed_by = ? AND consumed_at IS NULL",
+                "WHERE id = ? AND claimed_by = ? AND consumed_at IS NULL "
+                "AND EXISTS ("
+                "  SELECT 1 FROM agents "
+                "  WHERE agents.id = handovers.agent_id "
+                "    AND agents.deleted_at IS NULL"
+                ")",
                 (now, hid, consumer_id),
             )
             if cur.rowcount:
@@ -351,9 +358,10 @@ def release_handovers(
         quarantined: list[str] = []
         for hid in ids:
             row = c.execute(
-                "SELECT attempt_count FROM handovers "
-                "WHERE id = ? AND claimed_by = ? AND consumed_at IS NULL "
-                "  AND quarantined_at IS NULL",
+                "SELECT h.attempt_count FROM handovers h "
+                "JOIN agents a ON a.id = h.agent_id "
+                "WHERE h.id = ? AND h.claimed_by = ? AND h.consumed_at IS NULL "
+                "  AND h.quarantined_at IS NULL AND a.deleted_at IS NULL",
                 (hid, consumer_id),
             ).fetchone()
             if row is None:
@@ -439,7 +447,7 @@ def list_quarantined_handovers(
         raise ValueError("invalid cursor for quarantined handover list.")
 
     def _work(c: sqlite3.Connection) -> list[sqlite3.Row]:
-        clauses = ["h.quarantined_at IS NOT NULL"]
+        clauses = ["h.quarantined_at IS NOT NULL", "a.deleted_at IS NULL"]
         params: list[Any] = []
         if cursor_key is not None:
             frag, frag_params = keyset_predicate(

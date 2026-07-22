@@ -23,9 +23,16 @@ from np_agent_memory.tools.agents import (
     add_alias,
     describe_agent,
     list_agents,
+    purge_agent,
     register_agent,
     rename_agent,
+    unpurge_agent,
 )
+from np_agent_memory.tools.blockers import list_blockers, open_blocker
+from np_agent_memory.tools.handovers import latest_handover, save_handover
+from np_agent_memory.tools.inbox import inbox_check, inbox_send
+from np_agent_memory.tools.memory import log_memory, query_memory
+from np_agent_memory.tools.todos import add_todo, list_todos
 
 
 @pytest.fixture
@@ -597,6 +604,20 @@ class TestAddAlias:
         with pytest.raises(ValueError, match="different agent"):
             add_alias(db_conn, agent_cwd=str(path_a), new_cwd=str(path_b))
 
+    def test_soft_deleted_alias_conflict_raises_controlled_value_error(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        active = tmp_path / "active"
+        deleted = tmp_path / "deleted"
+        active.mkdir()
+        deleted.mkdir()
+        register_agent(db_conn, name="active", agent_cwd=str(active))
+        register_agent(db_conn, name="deleted", agent_cwd=str(deleted))
+        purge_agent(db_conn, target_cwd=str(deleted), confirm=True)
+
+        with pytest.raises(ValueError, match="different agent"):
+            add_alias(db_conn, agent_cwd=str(active), new_cwd=str(deleted))
+
     def test_moved_source_path_still_resolves(
         self, db_conn: sqlite3.Connection, tmp_path: Path
     ) -> None:
@@ -774,6 +795,313 @@ class TestListAgents:
 
 
 # ---------------------------------------------------------------------------
+# agent purge lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestAgentPurgeLifecycle:
+    def _register(
+        self, conn: sqlite3.Connection, tmp_path: Path, dirname: str, name: str
+    ) -> str:
+        cwd = tmp_path / dirname
+        cwd.mkdir()
+        register_agent(conn, name=name, agent_cwd=str(cwd))
+        return str(cwd)
+
+    def test_purge_requires_explicit_true_confirmation(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        cwd = self._register(db_conn, tmp_path, "target", "target")
+
+        with pytest.raises(ValueError, match="confirm=true"):
+            purge_agent(db_conn, target_cwd=cwd)
+
+    def test_soft_purge_omits_agent_from_default_directory(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        self._register(db_conn, tmp_path, "live", "live")
+        purge_agent(db_conn, target_cwd=target, confirm=True)
+
+        assert [
+            agent["name"] for agent in list_agents(db_conn, limit=10)["agents"]
+        ] == ["live"]
+
+    def test_soft_purge_marks_agent_in_deleted_directory(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        purge_agent(db_conn, target_cwd=target, confirm=True)
+
+        deleted = list_agents(db_conn, limit=10, show_deleted=True)["agents"][0]
+
+        assert deleted["deleted_at"] is not None
+
+    def test_repeated_soft_purge_is_a_no_op(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        first = purge_agent(db_conn, target_cwd=target, confirm=True)
+
+        repeated = purge_agent(db_conn, target_cwd=target, confirm=True)
+
+        assert (
+            repeated["status"],
+            repeated["deleted_at"],
+            repeated["counts"],
+        ) == (
+            "already_soft_deleted",
+            first["deleted_at"],
+            {
+                "agents": 0,
+                "aliases": 0,
+                "notes": 0,
+                "todos": 0,
+                "blockers": 0,
+                "inbox": 0,
+                "handovers": 0,
+            },
+        )
+
+    def test_soft_purge_does_not_allow_registration_to_revive_agent(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        purge_agent(db_conn, target_cwd=target, confirm=True)
+
+        with pytest.raises(ValueError, match="agent_unpurge"):
+            register_agent(db_conn, name="replacement", agent_cwd=target)
+
+    def test_soft_purge_blocks_agent_scoped_data_access(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        add_todo(db_conn, agent_cwd=target, title="hidden")
+        purge_agent(db_conn, target_cwd=target, confirm=True)
+
+        with pytest.raises(ValueError, match="not registered"):
+            list_todos(db_conn, agent_cwd=target, limit=10)
+
+    def test_unpurge_restores_preserved_todos(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        add_todo(db_conn, agent_cwd=target, title="preserved")
+        purge_agent(db_conn, target_cwd=target, confirm=True)
+        unpurge_agent(db_conn, target_cwd=target)
+
+        assert [
+            todo["title"]
+            for todo in list_todos(db_conn, agent_cwd=target, limit=10)["todos"]
+        ] == ["preserved"]
+
+    def test_unpurge_returns_not_found_after_hard_purge(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        purge_agent(db_conn, target_cwd=target, hard=True, confirm=True)
+
+        assert unpurge_agent(db_conn, target_cwd=target)["status"] == "not_found"
+
+    def test_describe_excludes_unread_messages_from_soft_deleted_sender(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        sender = self._register(db_conn, tmp_path, "sender", "sender")
+        recipient = self._register(db_conn, tmp_path, "recipient", "recipient")
+        inbox_send(
+            db_conn,
+            agent_cwd=sender,
+            to="recipient",
+            subject="hidden",
+            body="body",
+        )
+        purge_agent(db_conn, target_cwd=sender, confirm=True)
+
+        assert describe_agent(db_conn, agent_cwd=recipient)["unread_messages"] == 0
+
+    def test_hard_purge_removes_all_referencing_rows(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        target = self._register(db_conn, tmp_path, "target", "target")
+        peer = self._register(db_conn, tmp_path, "peer", "peer")
+        peer_recipient = self._register(
+            db_conn, tmp_path, "peer-recipient", "peer-recipient"
+        )
+        alias = tmp_path / "target-alias"
+        alias.mkdir()
+        add_alias(db_conn, agent_cwd=target, new_cwd=str(alias))
+        log_memory(db_conn, agent_cwd=target, category="note", content="target note")
+        add_todo(db_conn, agent_cwd=target, title="target todo")
+        open_blocker(db_conn, agent_cwd=target, title="target blocker")
+        save_handover(
+            db_conn, agent_cwd=target, summary="target handover", body_md="body"
+        )
+        inbox_send(
+            db_conn, agent_cwd=target, to="peer", subject="outbound", body="body"
+        )
+        inbox_send(db_conn, agent_cwd=peer, to="target", subject="inbound", body="body")
+        log_memory(
+            db_conn,
+            agent_cwd=peer,
+            category="note",
+            content="peer note",
+            topic="peer-isolation",
+        )
+        add_todo(db_conn, agent_cwd=peer, title="peer todo")
+        open_blocker(db_conn, agent_cwd=peer, title="peer blocker")
+        save_handover(db_conn, agent_cwd=peer, summary="peer handover", body_md="body")
+        inbox_send(
+            db_conn,
+            agent_cwd=peer,
+            to="peer-recipient",
+            subject="peer-to-peer",
+            body="body",
+        )
+
+        result = purge_agent(db_conn, target_cwd=target, hard=True, confirm=True)
+        peer_state = (
+            [
+                note["content"]
+                for note in query_memory(
+                    db_conn,
+                    agent_cwd=peer,
+                    limit=10,
+                    topic="peer-isolation",
+                )["notes"]
+            ],
+            [
+                todo["title"]
+                for todo in list_todos(db_conn, agent_cwd=peer, limit=10)["todos"]
+            ],
+            [
+                blocker["title"]
+                for blocker in list_blockers(db_conn, agent_cwd=peer, limit=10)[
+                    "blockers"
+                ]
+            ],
+            latest_handover(db_conn, agent_cwd=peer)["handover"]["summary"],
+            [
+                message["subject"]
+                for message in inbox_check(db_conn, agent_cwd=peer_recipient, limit=10)[
+                    "messages"
+                ]
+            ],
+        )
+
+        assert (result["status"], result["counts"], peer_state) == (
+            "hard_deleted",
+            {
+                "agents": 1,
+                "aliases": 2,
+                "notes": 2,
+                "todos": 1,
+                "blockers": 1,
+                "inbox": 2,
+                "handovers": 1,
+            },
+            (
+                ["peer note"],
+                ["peer todo"],
+                ["peer blocker"],
+                "peer handover",
+                ["peer-to-peer"],
+            ),
+        )
+
+    def test_hard_purge_rolls_back_all_target_data_when_later_delete_fails(
+        self, db_conn: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """A failed later delete must restore data removed by an earlier delete."""
+        target = self._register(db_conn, tmp_path, "target", "target")
+        peer = self._register(db_conn, tmp_path, "peer", "peer")
+        alias = tmp_path / "target-alias"
+        alias.mkdir()
+        add_alias(db_conn, agent_cwd=target, new_cwd=str(alias))
+        log_memory(
+            db_conn,
+            agent_cwd=target,
+            category="note",
+            content="target note",
+            topic="purge-rollback",
+        )
+        add_todo(db_conn, agent_cwd=target, title="target todo")
+        open_blocker(db_conn, agent_cwd=target, title="target blocker")
+        save_handover(
+            db_conn, agent_cwd=target, summary="target handover", body_md="body"
+        )
+        inbox_send(
+            db_conn, agent_cwd=target, to="peer", subject="outbound", body="body"
+        )
+        inbox_send(db_conn, agent_cwd=peer, to="target", subject="inbound", body="body")
+
+        def deny_todos_delete(
+            action: int,
+            table: str | None,
+            _column: str | None,
+            _database: str | None,
+            _trigger: str | None,
+        ) -> int:
+            if action == sqlite3.SQLITE_DELETE and table == "todos":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        db_conn.set_authorizer(deny_todos_delete)
+        try:
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                purge_agent(db_conn, target_cwd=target, hard=True, confirm=True)
+        finally:
+            db_conn.set_authorizer(None)
+
+        target_state = (
+            describe_agent(db_conn, agent_cwd=target)["registered"],
+            describe_agent(db_conn, agent_cwd=str(alias))["registered"],
+            [
+                note["content"]
+                for note in query_memory(
+                    db_conn,
+                    agent_cwd=target,
+                    limit=10,
+                    topic="purge-rollback",
+                )["notes"]
+            ],
+            [
+                todo["title"]
+                for todo in list_todos(db_conn, agent_cwd=target, limit=10)["todos"]
+            ],
+            [
+                blocker["title"]
+                for blocker in list_blockers(db_conn, agent_cwd=target, limit=10)[
+                    "blockers"
+                ]
+            ],
+            latest_handover(db_conn, agent_cwd=target)["handover"]["summary"],
+            [
+                message["subject"]
+                for message in inbox_check(db_conn, agent_cwd=target, limit=10)[
+                    "messages"
+                ]
+            ],
+            [
+                message["subject"]
+                for message in inbox_check(db_conn, agent_cwd=peer, limit=10)[
+                    "messages"
+                ]
+            ],
+        )
+
+        assert target_state == (
+            True,
+            True,
+            ["target note"],
+            ["target todo"],
+            ["target blocker"],
+            "target handover",
+            ["inbound"],
+            ["outbound"],
+        )
+
+
+# ---------------------------------------------------------------------------
 # tool registration wiring
 # ---------------------------------------------------------------------------
 
@@ -794,6 +1122,8 @@ class TestToolRegistration:
             "agent_rename",
             "agent_add_alias",
             "agent_list",
+            "agent_purge",
+            "agent_unpurge",
         } <= names
         assert {
             "memory_log",
