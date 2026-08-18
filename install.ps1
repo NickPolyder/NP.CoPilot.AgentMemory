@@ -140,6 +140,13 @@ Write-Host "✅ Python $versionOutput OK."
 
 # --- 3. Install the project (editable) + dev extras ------------------------
 
+& $venvPython -m pip --version *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "♻  Venv is missing pip — repairing with ensurepip..."
+    & $venvPython -m ensurepip --upgrade | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "ensurepip failed (exit $LASTEXITCODE)" }
+}
+
 Write-Host "🛠  Upgrading pip in venv..."
 & $venvPython -m pip install --upgrade --disable-pip-version-check pip | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed (exit $LASTEXITCODE)" }

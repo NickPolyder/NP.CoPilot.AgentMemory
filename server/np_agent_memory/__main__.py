@@ -13,6 +13,7 @@ Conventions:
 
 from __future__ import annotations
 
+import json
 import sys
 
 # Fail fast with an actionable message on unsupported Python BEFORE importing
@@ -42,8 +43,10 @@ from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory import __version__ as PACKAGE_VERSION
 from np_agent_memory.backup import start_lazy_daily_backup
+from np_agent_memory.db import open_connection
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools import register_all_tools
+from np_agent_memory.tools.inbox import inbox_summary
 
 try:
     from importlib.metadata import version as _pkg_version
@@ -99,8 +102,38 @@ def memory_alive() -> dict[str, Any]:
 register_all_tools(mcp)
 
 
+def _run_inbox_summary(agent_cwd: str) -> None:
+    """Emit one JSON inbox summary for the local Copilot CLI extension."""
+    try:
+        db_path = init_db(emit_diagnostic=False)
+        with open_connection(db_path) as conn:
+            summary = inbox_summary(conn, agent_cwd=agent_cwd)
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        print(f"[np-agent-memory] inbox-summary failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    print(json.dumps(summary, separators=(",", ":")))
+
+
 def main() -> None:
     global _DB_PATH
+
+    if len(sys.argv) == 4 and sys.argv[1] == "inbox-summary":
+        if sys.argv[2] != "--agent-cwd":
+            print(
+                "[np-agent-memory] inbox-summary requires --agent-cwd <path>.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        _run_inbox_summary(sys.argv[3])
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "inbox-summary":
+        print(
+            "[np-agent-memory] usage: np-agent-memory inbox-summary --agent-cwd <path>",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # Stderr breadcrumb so a bad start shows up in
     # ~/.copilot/logs/process-<unix-ms>-<pid>.log (the CLI captures stderr

@@ -12,7 +12,12 @@ from np_agent_memory.db import open_connection
 from np_agent_memory.identity import canonicalize_agent_cwd, new_ulid, now_iso
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools.agents import purge_agent, register_agent
-from np_agent_memory.tools.inbox import inbox_ack, inbox_check, inbox_send
+from np_agent_memory.tools.inbox import (
+    inbox_ack,
+    inbox_check,
+    inbox_send,
+    inbox_summary,
+)
 
 
 @pytest.fixture
@@ -568,3 +573,113 @@ def test_ack_marks_system_message_without_sender_normally(
         and stored["read_at"] is not None
         and stored["acked_at"] is not None
     )
+
+
+def test_summary_returns_canonical_counts_and_compact_unread_messages_only(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    sender = _register(db_conn, tmp_path, "sender", "alice")
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+    normal_unread = inbox_send(
+        db_conn,
+        agent_cwd=sender["cwd"],
+        to="bob",
+        subject="normal",
+        body="body-normal",
+    )
+    urgent_unread = inbox_send(
+        db_conn,
+        agent_cwd=sender["cwd"],
+        to="bob",
+        subject="urgent",
+        body="body-urgent",
+        priority="urgent",
+    )
+    read_message = inbox_send(
+        db_conn,
+        agent_cwd=sender["cwd"],
+        to="bob",
+        subject="read",
+        body="body-read",
+        priority="high",
+    )
+    acked_message = inbox_send(
+        db_conn,
+        agent_cwd=sender["cwd"],
+        to="bob",
+        subject="acked",
+        body="body-acked",
+        priority="low",
+    )
+    inbox_ack(
+        db_conn,
+        agent_cwd=recipient["cwd"],
+        message_ids=[read_message["id"]],
+        status="read",
+    )
+    inbox_ack(
+        db_conn,
+        agent_cwd=recipient["cwd"],
+        message_ids=[acked_message["id"]],
+    )
+    before = [
+        tuple(row)
+        for row in db_conn.execute(
+            "SELECT id, read_at, acked_at FROM inbox ORDER BY id"
+        ).fetchall()
+    ]
+
+    # Act
+    summary = inbox_summary(db_conn, agent_cwd=recipient["cwd"])
+    after = [
+        tuple(row)
+        for row in db_conn.execute(
+            "SELECT id, read_at, acked_at FROM inbox ORDER BY id"
+        ).fetchall()
+    ]
+
+    # Assert
+    assert summary == {
+        "canonical_path": recipient["canonical"],
+        "unread_count": 2,
+        "urgent_unread_count": 1,
+        "messages": [
+            {"id": urgent_unread["id"], "priority": "urgent"},
+            {"id": normal_unread["id"], "priority": "normal"},
+        ],
+    }
+    assert after == before
+
+
+def test_summary_returns_zero_counts_for_registered_agent_without_unread_messages(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    recipient = _register(db_conn, tmp_path, "recipient", "bob")
+
+    # Act
+    summary = inbox_summary(db_conn, agent_cwd=recipient["cwd"])
+
+    # Assert
+    assert summary == {
+        "canonical_path": recipient["canonical"],
+        "unread_count": 0,
+        "urgent_unread_count": 0,
+        "messages": [],
+    }
+
+
+def test_summary_raises_for_unregistered_agent(
+    db_conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    unregistered = tmp_path / "unregistered"
+    unregistered.mkdir()
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="not registered"):
+        inbox_summary(db_conn, agent_cwd=str(unregistered))

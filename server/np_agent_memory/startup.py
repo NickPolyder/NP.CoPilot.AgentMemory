@@ -16,7 +16,7 @@ from np_agent_memory.db import ensure_data_dir, get_db_path
 from np_agent_memory.migrations import run_migrations
 
 
-def init_db(data_dir: Path | None = None) -> Path:
+def init_db(data_dir: Path | None = None, *, emit_diagnostic: bool = True) -> Path:
     """One-time initialization: ensure dirs exist, run migrations, return db path.
 
     Called once at MCP server startup. Subsequent tool calls use
@@ -25,11 +25,12 @@ def init_db(data_dir: Path | None = None) -> Path:
     data_dir = ensure_data_dir(data_dir)
     db_path = get_db_path(data_dir)
 
-    print(
-        f"[np-agent-memory] db: {db_path}",
-        file=sys.stderr,
-        flush=True,
-    )
+    if emit_diagnostic:
+        print(
+            f"[np-agent-memory] db: {db_path}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     run_migrations(db_path)
     return db_path

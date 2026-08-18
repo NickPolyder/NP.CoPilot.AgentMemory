@@ -39,6 +39,7 @@ _ACK_STATUSES = get_args(_AckStatusLiteral)
 _MAX_SUBJECT_LEN = 256
 _MAX_BODY_LEN = 65_536
 _BODY_PREVIEW_LEN = 2_000
+_SUMMARY_MESSAGE_LIMIT = 200
 
 _INBOX_COLUMNS = (
     "i.id, i.from_label, i.subject, i.body, i.priority, i.sent_at, i.read_at, "
@@ -212,6 +213,52 @@ def inbox_check(
         else None
     )
     return {"messages": messages, "count": len(messages), "next_cursor": next_cursor}
+
+
+def inbox_summary(
+    conn: sqlite3.Connection,
+    *,
+    agent_cwd: str,
+) -> dict[str, Any]:
+    """Return a compact, read-only unread-inbox summary for a local notifier.
+
+    The summary deliberately excludes bodies, subjects, senders, and internal
+    agent IDs. ``messages`` is capped so a pathological inbox cannot make the
+    per-session notifier return an unbounded response.
+    """
+    canonical = canonicalize_agent_cwd(agent_cwd)
+
+    def _work(c: sqlite3.Connection) -> tuple[int, int, list[sqlite3.Row]]:
+        agent_id = require_agent_id(c, canonical)
+        clauses = (
+            "i.to_agent_id = ?",
+            "i.read_at IS NULL",
+            "i.acked_at IS NULL",
+            "(i.from_agent_id IS NULL OR sender.deleted_at IS NULL)",
+        )
+        where = " AND ".join(clauses)
+        counts = c.execute(
+            f"SELECT COUNT(*) AS unread_count, "
+            f"COALESCE(SUM(i.priority = 'urgent'), 0) AS urgent_unread_count "
+            f"FROM inbox i LEFT JOIN agents sender ON sender.id = i.from_agent_id "
+            f"WHERE {where}",
+            (agent_id,),
+        ).fetchone()
+        messages = c.execute(
+            f"SELECT i.id, i.priority FROM inbox i "
+            f"LEFT JOIN agents sender ON sender.id = i.from_agent_id "
+            f"WHERE {where} ORDER BY i.sent_at DESC, i.id DESC LIMIT ?",
+            (agent_id, _SUMMARY_MESSAGE_LIMIT),
+        ).fetchall()
+        return counts["unread_count"], counts["urgent_unread_count"], messages
+
+    unread_count, urgent_unread_count, rows = run_in_read_txn(conn, _work)
+    return {
+        "canonical_path": canonical,
+        "unread_count": unread_count,
+        "urgent_unread_count": urgent_unread_count,
+        "messages": [{"id": row["id"], "priority": row["priority"]} for row in rows],
+    }
 
 
 def inbox_ack(
