@@ -1,6 +1,6 @@
 # Session inbox notifier
 
-Status: **implemented** (v0.9.2).
+Status: **implemented** (v0.9.1).
 
 ## Purpose
 
