@@ -11,10 +11,12 @@ from np_agent_memory.db import open_connection
 from np_agent_memory.startup import init_db
 from np_agent_memory.tools._common import (
     MAX_LIMIT,
+    MAX_METADATA_BYTES,
     clamp_limit,
     decode_cursor,
     encode_cursor,
     keyset_predicate,
+    metadata_to_json,
     require_agent_id,
     resolve_agent_id,
     truncate,
@@ -61,6 +63,22 @@ class TestClampLimit:
     def test_rejects_bool(self) -> None:
         with pytest.raises(ValueError, match="integer"):
             clamp_limit(True)
+
+
+class TestMetadataLimit:
+    def test_accepts_exact_serialized_byte_limit(self) -> None:
+        metadata = {"x": "a" * (MAX_METADATA_BYTES - len('{"x":""}'))}
+
+        encoded = metadata_to_json(metadata)
+
+        assert encoded is not None
+        assert len(encoded.encode("utf-8")) == MAX_METADATA_BYTES
+
+    def test_rejects_one_byte_over_serialized_limit(self) -> None:
+        metadata = {"x": "a" * (MAX_METADATA_BYTES - len('{"x":""}') + 1)}
+
+        with pytest.raises(ValueError, match=f"max {MAX_METADATA_BYTES} bytes"):
+            metadata_to_json(metadata)
 
 
 class TestCursor:

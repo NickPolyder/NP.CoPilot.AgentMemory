@@ -11,9 +11,11 @@ const settingsPath = join(homedir(), ".copilot", "np-agent-memory", "settings.js
 
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
+    executablePath: "np-agent-memory",
     pollIntervalSeconds: 60,
     promptMode: "prompt-on-urgent",
 });
+const MAX_FAILURE_DETAIL_LENGTH = 4_000;
 
 const state = {
     active: true,
@@ -75,12 +77,14 @@ function normalizeSettings(value) {
             typeof configured.enabled === "boolean"
                 ? configured.enabled
                 : DEFAULT_SETTINGS.enabled,
-        pollIntervalSeconds,
-        pluginRoot:
-            typeof configured.pluginRoot === "string" &&
-            isAbsolute(configured.pluginRoot)
-                ? configured.pluginRoot
+        executablePath:
+            typeof configured.executablePath === "string" &&
+            configured.executablePath.length > 0 &&
+            (configured.executablePath === DEFAULT_SETTINGS.executablePath ||
+                isAbsolute(configured.executablePath))
+                ? configured.executablePath
                 : null,
+        pollIntervalSeconds,
         promptMode,
     };
 }
@@ -100,21 +104,18 @@ async function loadSettings() {
     }
 }
 
-async function getInboxSummary(agentCwd, pluginRoot) {
-    if (!pluginRoot) {
+async function getInboxSummary(agentCwd, executablePath) {
+    if (!executablePath) {
         const error = new Error(
-            "the notifier plugin root is not configured. Run install-inbox-notifier.ps1 from the plugin directory.",
+            "the notifier executable is not configured. Run install-inbox-notifier.ps1 from the plugin directory.",
         );
-        error.code = "NP_AGENT_MEMORY_PLUGIN_ROOT_NOT_CONFIGURED";
+        error.code = "NP_AGENT_MEMORY_EXECUTABLE_NOT_CONFIGURED";
         throw error;
     }
 
     const { stdout } = await execFileAsync(
-        "uvx",
+        executablePath,
         [
-            "--from",
-            pluginRoot,
-            "np-agent-memory",
             "inbox-summary",
             "--agent-cwd",
             agentCwd,
@@ -133,16 +134,35 @@ function describeInbox(summary) {
     return `${summary.unread_count} unread inbox message${summary.unread_count === 1 ? "" : "s"}${urgent ? ` (${urgent} urgent)` : ""}`;
 }
 
+function truncateFailureDetail(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    return value.length <= MAX_FAILURE_DETAIL_LENGTH
+        ? value
+        : `${value.slice(0, MAX_FAILURE_DETAIL_LENGTH)}... [truncated]`;
+}
+
+function formatInboxCheckFailure(error) {
+    return JSON.stringify({
+        code:
+            typeof error?.code === "number" || typeof error?.code === "string"
+                ? error.code
+                : null,
+        killed: error?.killed === true,
+        message: truncateFailureDetail(error?.message) ?? "Unknown error",
+        signal: typeof error?.signal === "string" ? error.signal : null,
+        stderr: truncateFailureDetail(error?.stderr),
+    });
+}
+
 async function flushPrompt() {
     if (
         !state.pendingPrompt ||
         !state.active ||
         (state.hasObservedWork && !state.idle)
     ) {
-        return;
-    }
-
-    if (state.timer) {
         return;
     }
 
@@ -181,7 +201,7 @@ async function pollInbox() {
 
         const summary = await getInboxSummary(
             workingDirectory,
-            settings.pluginRoot,
+            settings.executablePath,
         );
         if (workingDirectoryEpoch !== state.workingDirectoryEpoch) {
             state.retryRequested = true;
@@ -212,7 +232,7 @@ async function pollInbox() {
             await flushPrompt();
         }
     } catch (error) {
-        if (error?.code === "NP_AGENT_MEMORY_PLUGIN_ROOT_NOT_CONFIGURED") {
+        if (error?.code === "NP_AGENT_MEMORY_EXECUTABLE_NOT_CONFIGURED") {
             state.pollingDisabled = true;
             if (state.timer) {
                 clearInterval(state.timer);
@@ -250,7 +270,7 @@ async function pollInbox() {
             return;
         }
         await session.log(
-            `np-agent-memory inbox notifier check failed: ${error.message}`,
+            `np-agent-memory inbox notifier check failed: ${formatInboxCheckFailure(error)}`,
             { level: "warning" },
         );
     } finally {

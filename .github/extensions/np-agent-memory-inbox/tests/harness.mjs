@@ -22,7 +22,11 @@ function createSyntheticModule(context, identifier, exportsMap) {
     );
 }
 
-function createExecFileStub(execFileCalls, inboxSummary) {
+function cloneExecFileError(error) {
+    return Object.assign(new Error(error.message), error);
+}
+
+function createExecFileStub(execFileCalls, { execFileError, inboxSummary }) {
     function recordCall(command, args, options) {
         execFileCalls.push({
             command,
@@ -33,11 +37,22 @@ function createExecFileStub(execFileCalls, inboxSummary) {
 
     function execFile(command, args, options, callback) {
         recordCall(command, args, options);
+        if (execFileError) {
+            callback(
+                cloneExecFileError(execFileError),
+                execFileError.stdout ?? "",
+                execFileError.stderr ?? "",
+            );
+            return;
+        }
         callback(null, JSON.stringify(inboxSummary), "");
     }
 
     execFile[promisify.custom] = async (command, args, options) => {
         recordCall(command, args, options);
+        if (execFileError) {
+            throw cloneExecFileError(execFileError);
+        }
         return {
             stdout: JSON.stringify(inboxSummary),
             stderr: "",
@@ -79,6 +94,7 @@ export async function loadExtension(options = {}) {
             urgent_unread_count: 0,
             messages: [],
         },
+        execFileError = null,
         readFileError = null,
     } = options;
 
@@ -124,7 +140,10 @@ export async function loadExtension(options = {}) {
     sandbox.globalThis = sandbox;
 
     const context = vm.createContext(sandbox);
-    const execFile = createExecFileStub(execFileCalls, inboxSummary);
+    const execFile = createExecFileStub(execFileCalls, {
+        execFileError,
+        inboxSummary,
+    });
 
     const linker = async (specifier) => {
         switch (specifier) {

@@ -1,6 +1,6 @@
 # Session inbox notifier
 
-Status: **implemented** (v0.9.2).
+Status: **implemented** (v0.9.3).
 
 ## Purpose
 
@@ -13,17 +13,18 @@ The polling check uses no model tokens.
 - The extension source is bundled at `.github/extensions/np-agent-memory-inbox/extension.mjs`.
   `.claude-plugin/plugin.json` declares `"extensions": ".github/extensions/"`,
   so Copilot loads the extension with the plugin.
-- The installer stores the plugin's absolute path in
+- The installer adds `np-agent-memory` to uv's persistent tool directory and
+  stores its absolute executable path in
   `$HOME\.copilot\np-agent-memory\settings.json`.
-  The extension uses that explicit path for `uvx --from`; it never derives a
-  source path from its loader location.
+  The extension invokes that executable directly; it never runs `uvx` while
+  polling.
 - It obtains the current session working directory from
   `session.rpc.metadata.snapshot()` immediately after joining the foreground
   session, so it never observes another Copilot session's agent identity or
   waits for the first user prompt.
   A later `onSessionStart` directory is authoritative and cannot be replaced
   by a delayed metadata snapshot.
-- It invokes `uvx --from <plugin-root> np-agent-memory inbox-summary --agent-cwd <working-directory>`.
+- It invokes `<uv-tool-bin>/np-agent-memory inbox-summary --agent-cwd <working-directory>`.
 - The `inbox-summary` command is read-only and returns only canonical path, unread and urgent counts, and capped message IDs/priorities.
   It never returns message bodies, subjects, senders, or agent ULIDs.
 - The extension logs only when it first observes unread messages or observes new unread message IDs.
@@ -42,13 +43,13 @@ Create or edit `$HOME\.copilot\np-agent-memory\settings.json`:
     "enabled": true,
     "pollIntervalSeconds": 60,
     "promptMode": "prompt-on-urgent",
-    "pluginRoot": "C:\\Users\\NickP\\.copilot\\installed-plugins\\_direct\\NickPolyder--NP.CoPilot.AgentMemory"
+    "executablePath": "C:\\Users\\NickP\\.local\\bin\\np-agent-memory.exe"
   }
 }
 ```
 
 `pollIntervalSeconds` is clamped to 10–3600 seconds.
-`pluginRoot` is written by the installer and must be an absolute path.
+`executablePath` is written by the installer and must be an absolute path.
 
 | `promptMode` | Behaviour | Model tokens |
 |---|---|---|
@@ -71,5 +72,6 @@ plugin's installed directory:
 ./install-inbox-notifier.ps1
 ```
 
-This records the plugin root without copying or relocating the bundled
-extension. Restart Copilot CLI, or run `/clear`, after configuration.
+This installs the uv tool and records its executable path without copying or
+relocating the bundled extension. Restart Copilot CLI, or run `/clear`, after
+configuration.

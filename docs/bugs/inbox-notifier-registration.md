@@ -13,8 +13,9 @@ argument and a dependency-resolution attempt on every polling interval.
 ## Resolution
 
 - Keep the bundled `extensions` declaration in `.claude-plugin/plugin.json`.
-- Persist the installed plugin root with `install-inbox-notifier.ps1` and require the
-  extension to use that absolute path.
+- Install the plugin console command once with `install-inbox-notifier.ps1`
+  and require the extension to use its absolute executable path.
 
-The notifier now disables itself with one actionable warning when its root is
-not configured, rather than retrying a broken `uvx` command every interval.
+The notifier now disables itself with one actionable warning when its
+executable is not configured, rather than resolving packages with `uvx` every
+interval.

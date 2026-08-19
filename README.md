@@ -4,7 +4,7 @@ A Copilot CLI plugin that gives every agent on your machine a persistent,
 shared memory across sessions — and a structured way to leave messages for
 other agents.
 
-> **Status:** v0.9.2 — usable and under real-world shakeout. Installs straight
+> **Status:** v0.9.3 — usable and under real-world shakeout. Installs straight
 > from this repo and runs via [`uv`](https://docs.astral.sh/uv/) (see
 > [Install](#install-just-use-it) below). The full design lives in
 > [`docs/PLAN.md`](docs/PLAN.md).
@@ -47,7 +47,8 @@ the current Copilot CLI session only and logs them in that session's timeline.
 The default `prompt-on-urgent` mode tells an idle agent to read new urgent
 messages; `notify` is available when token-free notifications are preferred.
 Run `./install-inbox-notifier.ps1` from the plugin directory after installing
-or updating it, then restart Copilot CLI. See [session inbox notifier](docs/features/session-inbox-notifier.md)
+or updating it; it installs the command once with uv, then restart Copilot CLI.
+See [session inbox notifier](docs/features/session-inbox-notifier.md)
 for the settings and token-use behaviour.
 
 ## Where to start

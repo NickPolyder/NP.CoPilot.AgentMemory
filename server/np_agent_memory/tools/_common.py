@@ -23,7 +23,7 @@ MAX_LIMIT = 200
 # Server-side cap on the serialized size of an agent-supplied ``metadata``
 # object. Bounds local DB bloat and MCP response size; the per-field text caps
 # (name/title/body/etc.) do not otherwise constrain the free-form metadata blob.
-MAX_METADATA_BYTES = 8192
+MAX_METADATA_BYTES = 16_384
 
 # Server-side cap on the number of ids accepted by a batch mutation tool
 # (delete/ack/release). Mirrors ``MAX_LIMIT`` so a single call cannot build an
