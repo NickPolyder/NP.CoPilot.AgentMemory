@@ -1,6 +1,6 @@
 # Session inbox notifier
 
-Status: **implemented** (v0.9.1).
+Status: **implemented** (v0.9.2).
 
 ## Purpose
 
@@ -11,8 +11,12 @@ The polling check uses no model tokens.
 ## Design
 
 - The extension source is bundled at `.github/extensions/np-agent-memory-inbox/extension.mjs`.
-- `.claude-plugin/plugin.json` declares `"extensions": ".github/extensions/"`, so
-  Copilot loads the extension from the installed plugin directory.
+  Copilot CLI discovers user extensions only from `$HOME\.copilot\extensions\`,
+  so `install-inbox-notifier.ps1` copies it to the supported location.
+- The installer stores the plugin's absolute path in
+  `$HOME\.copilot\np-agent-memory\settings.json`.
+  The extension uses that explicit path for `uvx --from`; it never derives a
+  source path from its loader location.
 - It obtains the current session working directory from
   `session.rpc.metadata.snapshot()` immediately after joining the foreground
   session, so it never observes another Copilot session's agent identity or
@@ -37,12 +41,14 @@ Create or edit `$HOME\.copilot\np-agent-memory\settings.json`:
   "inboxNotifier": {
     "enabled": true,
     "pollIntervalSeconds": 60,
-    "promptMode": "prompt-on-urgent"
+    "promptMode": "prompt-on-urgent",
+    "pluginRoot": "C:\\Users\\NickP\\.copilot\\installed-plugins\\_direct\\NickPolyder--NP.CoPilot.AgentMemory"
   }
 }
 ```
 
 `pollIntervalSeconds` is clamped to 10–3600 seconds.
+`pluginRoot` is written by the installer and must be an absolute path.
 
 | `promptMode` | Behaviour | Model tokens |
 |---|---|---|
@@ -56,6 +62,14 @@ Once work has begun, prompts are queued until the session becomes idle.
 They tell the agent to use `np-agent-memory-inbox_check`; they never include
 inbox content or perform reads/acknowledgements automatically.
 
-## Activation
+## Installation and activation
 
-Restart Copilot CLI, or run `/clear`, after installing or updating the plugin.
+After installing or updating the plugin, run the notifier installer from the
+plugin's installed directory:
+
+```powershell
+./install-inbox-notifier.ps1
+```
+
+Use `-Force` only when replacing a changed user extension during an update.
+Restart Copilot CLI, or run `/clear`, after installation.

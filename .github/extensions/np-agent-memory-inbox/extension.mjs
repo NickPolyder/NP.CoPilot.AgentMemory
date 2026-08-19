@@ -1,15 +1,12 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 
 import { joinSession } from "@github/copilot-sdk/extension";
 
 const execFileAsync = promisify(execFile);
-const extensionDirectory = dirname(fileURLToPath(import.meta.url));
-const pluginRoot = resolve(extensionDirectory, "..", "..", "..");
 const settingsPath = join(homedir(), ".copilot", "np-agent-memory", "settings.json");
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -28,6 +25,7 @@ const state = {
     restartRequested: false,
     pollingDisabled: false,
     registrationWarningLogged: false,
+    configurationWarningLogged: false,
     registrationEpoch: 0,
     workingDirectoryEpoch: 0,
     hasSessionStart: false,
@@ -78,6 +76,11 @@ function normalizeSettings(value) {
                 ? configured.enabled
                 : DEFAULT_SETTINGS.enabled,
         pollIntervalSeconds,
+        pluginRoot:
+            typeof configured.pluginRoot === "string" &&
+            isAbsolute(configured.pluginRoot)
+                ? configured.pluginRoot
+                : null,
         promptMode,
     };
 }
@@ -97,7 +100,15 @@ async function loadSettings() {
     }
 }
 
-async function getInboxSummary(agentCwd) {
+async function getInboxSummary(agentCwd, pluginRoot) {
+    if (!pluginRoot) {
+        const error = new Error(
+            "the notifier plugin root is not configured. Run install-inbox-notifier.ps1 from the plugin directory.",
+        );
+        error.code = "NP_AGENT_MEMORY_PLUGIN_ROOT_NOT_CONFIGURED";
+        throw error;
+    }
+
     const { stdout } = await execFileAsync(
         "uvx",
         [
@@ -168,7 +179,10 @@ async function pollInbox() {
             return;
         }
 
-        const summary = await getInboxSummary(workingDirectory);
+        const summary = await getInboxSummary(
+            workingDirectory,
+            settings.pluginRoot,
+        );
         if (workingDirectoryEpoch !== state.workingDirectoryEpoch) {
             state.retryRequested = true;
             return;
@@ -198,6 +212,21 @@ async function pollInbox() {
             await flushPrompt();
         }
     } catch (error) {
+        if (error?.code === "NP_AGENT_MEMORY_PLUGIN_ROOT_NOT_CONFIGURED") {
+            state.pollingDisabled = true;
+            if (state.timer) {
+                clearInterval(state.timer);
+                state.timer = null;
+            }
+            if (!state.configurationWarningLogged) {
+                state.configurationWarningLogged = true;
+                await session.log(
+                    `np-agent-memory inbox notifier is disabled: ${error.message}`,
+                    { level: "warning" },
+                );
+            }
+            return;
+        }
         if (/not registered/i.test(error.message)) {
             if (
                 registrationEpoch !== state.registrationEpoch ||
@@ -304,6 +333,7 @@ session = await joinSession({
                 state.registrationEpoch += 1;
                 state.pollingDisabled = false;
                 state.registrationWarningLogged = false;
+                state.configurationWarningLogged = false;
                 void startPolling();
             }
         },
