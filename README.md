@@ -46,8 +46,8 @@ The bundled `np-agent-memory-inbox` extension checks unread inbox changes for
 the current Copilot CLI session only and logs them in that session's timeline.
 The default `prompt-on-urgent` mode tells an idle agent to read new urgent
 messages; `notify` is available when token-free notifications are preferred.
-Install it separately with `./install-inbox-notifier.ps1` from the plugin
-directory, then restart Copilot CLI. See [session inbox notifier](docs/features/session-inbox-notifier.md)
+Run `./install-inbox-notifier.ps1` from the plugin directory after installing
+or updating it, then restart Copilot CLI. See [session inbox notifier](docs/features/session-inbox-notifier.md)
 for the settings and token-use behaviour.
 
 ## Where to start

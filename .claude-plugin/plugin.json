@@ -8,5 +8,6 @@
   "homepage": "https://github.com/NickPolyder/NP.CoPilot.AgentMemory",
   "repository": "https://github.com/NickPolyder/NP.CoPilot.AgentMemory",
   "license": "MIT",
-  "keywords": ["copilot", "agent-memory", "mcp", "sqlite", "handover"]
+  "keywords": ["copilot", "agent-memory", "mcp", "sqlite", "handover"],
+  "extensions": ".github/extensions/"
 }

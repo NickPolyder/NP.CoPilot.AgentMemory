@@ -11,8 +11,8 @@ The polling check uses no model tokens.
 ## Design
 
 - The extension source is bundled at `.github/extensions/np-agent-memory-inbox/extension.mjs`.
-  Copilot CLI discovers user extensions only from `$HOME\.copilot\extensions\`,
-  so `install-inbox-notifier.ps1` copies it to the supported location.
+  `.claude-plugin/plugin.json` declares `"extensions": ".github/extensions/"`,
+  so Copilot loads the extension with the plugin.
 - The installer stores the plugin's absolute path in
   `$HOME\.copilot\np-agent-memory\settings.json`.
   The extension uses that explicit path for `uvx --from`; it never derives a
@@ -62,14 +62,14 @@ Once work has begun, prompts are queued until the session becomes idle.
 They tell the agent to use `np-agent-memory-inbox_check`; they never include
 inbox content or perform reads/acknowledgements automatically.
 
-## Installation and activation
+## Configuration and activation
 
-After installing or updating the plugin, run the notifier installer from the
+After installing or updating the plugin, run the configuration script from the
 plugin's installed directory:
 
 ```powershell
 ./install-inbox-notifier.ps1
 ```
 
-Use `-Force` only when replacing a changed user extension during an update.
-Restart Copilot CLI, or run `/clear`, after installation.
+This records the plugin root without copying or relocating the bundled
+extension. Restart Copilot CLI, or run `/clear`, after configuration.
