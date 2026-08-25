@@ -36,11 +36,11 @@ honoring `requires-python`. Making the project a real installable package
 
 ## Options considered
 
-### Option A — `uvx --from ${PLUGIN_ROOT}` (chosen)
+### Option A — `uvx --from .` (chosen)
 
 Make the project a proper hatchling-built package and point `.mcp.json` at
-`uvx --from ${PLUGIN_ROOT} np-agent-memory`. `uv` builds the plugin from its
-installed directory into its own cache, resolves the pinned deps, and runs the
+`uvx --from . np-agent-memory`. `uv` builds the plugin from its installed
+directory into its own cache, resolves the pinned deps, and runs the
 `np-agent-memory` console script — provisioning Python 3.12+ itself if needed.
 
 - **Pros**
@@ -51,8 +51,9 @@ installed directory into its own cache, resolves the pinned deps, and runs the
     of the bootstrap approach.
   - Deletes all hand-rolled provisioning: no venv build, staleness marker,
     atomic swap, or lockfile to own and test (~225 lines + 25 tests removed).
-  - `${PLUGIN_ROOT}` keeps the **repo as the single source of truth** — no PyPI
-    release coupling (unlike 0003's Option B). The plugin dir *is* the source.
+  - The plugin directory keeps the **repo as the single source of truth** — no
+    PyPI release coupling (unlike 0003's Option B). The plugin dir *is* the
+    source.
   - Runtime data (DB, backups, logs) still lives outside the install dir
     (`AGENT_MEMORY_DIR`), unchanged and untouched by updates.
 - **Cons**
@@ -79,7 +80,7 @@ installed directory into its own cache, resolves the pinned deps, and runs the
 
 ## Decision
 
-**Adopt Option A — `uvx --from ${PLUGIN_ROOT} np-agent-memory`.** This
+**Adopt Option A — `uvx --from . np-agent-memory`.** This
 supersedes the bootstrap launcher from ADR 0003 and resolves cross-platform
 support in the same move (the Linux/macOS roadmap item from 0003 is closed by
 this decision, not deferred).
@@ -97,7 +98,7 @@ this decision, not deferred).
   is always picked up, even if a release forgets to bump the version (covers
   the path-cache-invalidation caveat above).
 - **`.mcp.json`** — `command: "uvx"`,
-  `args: ["--from", "${PLUGIN_ROOT}", "np-agent-memory"]`, env only
+  `args: ["--from", ".", "np-agent-memory"]`, env only
   `PYTHONUNBUFFERED=1` (the `PYTHONPATH` shim is gone — the package is
   installed, not run from source).
 - **Remove** `bootstrap.py`, `server/tests/test_bootstrap.py`,
@@ -126,7 +127,8 @@ this decision, not deferred).
 ### Positive
 
 - A single `.mcp.json` works on Windows, Linux, and macOS — cross-platform is
-  solved, not deferred.
+  solved, not deferred. Source resolution does not rely on expanding
+  `${PLUGIN_ROOT}` inside an argument during a plugin reload.
 - No more hand-rolled provisioning to maintain or test; `uv` owns venv, deps,
   and Python provisioning.
 - The repo remains the single source of truth (`--from ${PLUGIN_ROOT}`), with

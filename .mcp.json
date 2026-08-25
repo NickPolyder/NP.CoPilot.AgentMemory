@@ -3,7 +3,7 @@
     "np-agent-memory": {
       "type": "local",
       "command": "uvx",
-      "args": ["--from", "${PLUGIN_ROOT}", "np-agent-memory"],
+      "args": ["--from", ".", "np-agent-memory"],
       "env": {
         "PYTHONUNBUFFERED": "1"
       }

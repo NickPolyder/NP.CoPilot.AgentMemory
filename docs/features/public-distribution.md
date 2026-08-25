@@ -22,11 +22,13 @@ and still depended on the right system Python being first on `PATH`.
 
 ## Solution: launch via `uvx`
 
-`.mcp.json` now launches `uvx --from ${PLUGIN_ROOT} np-agent-memory`. `uv` builds
-the installed plugin into its own managed cache, resolves the pinned deps, and
-runs the `np-agent-memory` console script — **provisioning a Python ≥ 3.12 itself**
-if the machine doesn't have one. The same command works on Windows, Linux, and
-macOS, so cross-platform support falls out for free.
+`.mcp.json` launches `uvx --from . np-agent-memory`. `uv` builds the installed
+plugin into its own managed cache, resolves the pinned deps, and runs the
+`np-agent-memory` console script — **provisioning a Python ≥ 3.12 itself** if
+the machine doesn't have one. Resolving the source as `.` avoids relying on
+Copilot CLI to interpolate `${PLUGIN_ROOT}` inside an argument during an MCP
+reload. The same command works on Windows, Linux, and macOS, so cross-platform
+support falls out for free.
 
 This required making the project a real installable package:
 
@@ -49,7 +51,7 @@ Runtime data (DB, backups, logs) still lives **outside** the install dir at
 | Change | File(s) |
 |---|---|
 | Packaging | `pyproject.toml` (build-system, deps, dev extra, entry point, wheel mapping, `cache-keys`) |
-| MCP wiring | `.mcp.json` (`uvx --from ${PLUGIN_ROOT} np-agent-memory`) |
+| MCP wiring | `.mcp.json` (`uvx --from . np-agent-memory`) |
 | Removed launcher | `bootstrap.py`, `server/tests/test_bootstrap.py`, `requirements.txt`, `requirements-dev.txt` |
 | Dev installer | `install.ps1` (now editable `pip install -e ".[dev]"` + self-verify) |
 | Version align | `0.5.0` across `plugin.json`, `pyproject.toml`, `__init__.py` |

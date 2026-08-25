@@ -4,7 +4,7 @@ A Copilot CLI plugin that gives every agent on your machine a persistent,
 shared memory across sessions — and a structured way to leave messages for
 other agents.
 
-> **Status:** v0.9.3 — usable and under real-world shakeout. Installs straight
+> **Status:** v0.9.4 — usable and under real-world shakeout. Installs straight
 > from this repo and runs via [`uv`](https://docs.astral.sh/uv/) (see
 > [Install](#install-just-use-it) below). The full design lives in
 > [`docs/PLAN.md`](docs/PLAN.md).
@@ -86,7 +86,7 @@ Then, inside the Copilot CLI:
 ```
 
 Restart the CLI. `.mcp.json` launches the server as
-`uvx --from ${PLUGIN_ROOT} np-agent-memory`: on the **first** launch uv builds
+`uvx --from . np-agent-memory`: on the **first** launch uv builds
 the project and resolves its pinned dependencies (a few seconds, logged to
 `~/.copilot/logs/process-*.log`); subsequent launches reuse uv's cache. Verify
 the server is up by calling the tool:
