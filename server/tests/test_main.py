@@ -125,8 +125,8 @@ class TestMainFunction:
             finally:
                 conn.close()
 
-            # mcp.run() was invoked
-            mock_run.assert_called_once()
+            # mcp.run() was invoked with the plugin's deployed transport.
+            mock_run.assert_called_once_with(transport="stdio")
 
     def test_main_exits_on_oserror(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch

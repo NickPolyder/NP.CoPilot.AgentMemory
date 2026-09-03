@@ -7,7 +7,7 @@ the tool surface stays declarative and the entry point stays thin.
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from np_agent_memory.backup import register_backup_tools
 from np_agent_memory.tools.agents import register_agent_tools
@@ -18,8 +18,8 @@ from np_agent_memory.tools.memory import register_memory_tools
 from np_agent_memory.tools.todos import register_todo_tools
 
 
-def register_all_tools(mcp: FastMCP) -> None:
-    """Register every tool module onto the FastMCP server."""
+def register_all_tools(mcp: MCPServer) -> None:
+    """Register every tool module onto the MCPServer instance."""
     register_agent_tools(mcp)
     register_memory_tools(mcp)
     register_todo_tools(mcp)

@@ -23,7 +23,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
@@ -483,7 +483,7 @@ def list_quarantined_handovers(
     }
 
 
-def register_handover_tools(mcp: FastMCP) -> None:
+def register_handover_tools(mcp: MCPServer) -> None:
     """Register the handover tools (agent-side + consumer-side) on the server."""
 
     @mcp.tool()

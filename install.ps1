@@ -163,7 +163,7 @@ if ($LASTEXITCODE -ne 0) { throw "editable install failed (exit $LASTEXITCODE)" 
 # Importing np_agent_memory.__main__ exercises:
 #   * the venv's site-packages (mcp SDK importable)
 #   * the editable install (np_agent_memory resolves to server/np_agent_memory)
-#   * FastMCP instantiation at module load (the `mcp = FastMCP(...)` line
+#   * MCPServer instantiation at module load (the `mcp = MCPServer(...)` line
 #     runs but `mcp.run()` does NOT, because __name__ != "__main__")
 # A failure here means the production plugin would also fail to start
 # silently — which is exactly what we are guarding against.

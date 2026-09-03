@@ -13,7 +13,7 @@ import json
 import sqlite3
 from typing import Annotated, Any, Literal, get_args
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from pydantic import Field, StrictBool
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
@@ -440,8 +440,8 @@ def restore_notes(
     return run_in_write_txn(conn, _work)
 
 
-def register_memory_tools(mcp: FastMCP) -> None:
-    """Register the memory tools on the FastMCP server."""
+def register_memory_tools(mcp: MCPServer) -> None:
+    """Register the memory tools on the MCPServer instance."""
 
     @mcp.tool()
     def memory_log(

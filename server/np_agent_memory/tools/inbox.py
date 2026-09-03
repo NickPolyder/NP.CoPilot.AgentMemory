@@ -12,7 +12,7 @@ import json
 import sqlite3
 from typing import Annotated, Any, Literal, get_args
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
@@ -317,8 +317,8 @@ _check_inbox = inbox_check
 _ack_inbox = inbox_ack
 
 
-def register_inbox_tools(mcp: FastMCP) -> None:
-    """Register the inbox tools on the FastMCP server."""
+def register_inbox_tools(mcp: MCPServer) -> None:
+    """Register the inbox tools on the MCPServer instance."""
 
     @mcp.tool()
     def inbox_send(

@@ -20,7 +20,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Annotated, Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from pydantic import Field, StrictBool
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
@@ -564,8 +564,8 @@ def list_agents(
     return {"agents": agents, "count": len(agents), "next_cursor": next_cursor}
 
 
-def register_agent_tools(mcp: FastMCP) -> None:
-    """Register the agent-identity tools on the FastMCP server."""
+def register_agent_tools(mcp: MCPServer) -> None:
+    """Register the agent-identity tools on the MCPServer instance."""
 
     @mcp.tool()
     def agent_register(
