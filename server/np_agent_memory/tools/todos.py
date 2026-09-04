@@ -12,7 +12,7 @@ import json
 import sqlite3
 from typing import Annotated, Any, Literal, get_args
 
-from mcp.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
@@ -313,8 +313,8 @@ def update_todo(
     return _row_to_todo(row, full=True)
 
 
-def register_todo_tools(mcp: MCPServer) -> None:
-    """Register the todo tools on the MCPServer instance."""
+def register_todo_tools(mcp: FastMCP) -> None:
+    """Register the todo tools on the FastMCP instance."""
 
     @mcp.tool()
     def todo_add(

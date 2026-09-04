@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Annotated, Any, Literal, get_args
 
-from mcp.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from np_agent_memory.db import open_connection, run_in_read_txn, run_in_write_txn
@@ -310,8 +310,8 @@ def escalate_blocker(
     return _row_to_blocker(row, full=True)
 
 
-def register_blocker_tools(mcp: MCPServer) -> None:
-    """Register the blocker tools on the MCPServer instance."""
+def register_blocker_tools(mcp: FastMCP) -> None:
+    """Register the blocker tools on the FastMCP instance."""
 
     @mcp.tool()
     def blocker_open(

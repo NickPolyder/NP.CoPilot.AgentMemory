@@ -39,7 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mcp.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory import __version__ as PACKAGE_VERSION
 from np_agent_memory.backup import start_lazy_daily_backup
@@ -63,7 +63,7 @@ _STARTED_AT_ISO = datetime.now(UTC).isoformat(timespec="microseconds")
 _DB_PATH: Path | None = None
 
 
-mcp = MCPServer(
+mcp = FastMCP(
     name="np-agent-memory",
     instructions=(
         "Shared persistent memory + cross-agent inbox + handover transport "

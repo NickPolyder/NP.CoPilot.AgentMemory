@@ -1108,9 +1108,9 @@ class TestAgentPurgeLifecycle:
 
 class TestToolRegistration:
     def test_registers_expected_tools(self) -> None:
-        from mcp.server import MCPServer
+        from mcp.server.fastmcp import FastMCP
 
-        probe = MCPServer(name="probe")
+        probe = FastMCP(name="probe")
         register_all_tools(probe)
         import anyio
 
@@ -1156,13 +1156,13 @@ class TestToolRegistration:
         valid values (and the right field) on the *first* call — not by failing
         and reading the error. Regression for the "first call always fails" bug.
         """
-        from mcp.server import MCPServer
+        from mcp.server.fastmcp import FastMCP
 
-        probe = MCPServer(name="probe")
+        probe = FastMCP(name="probe")
         register_all_tools(probe)
         import anyio
 
-        schemas = {t.name: t.input_schema for t in anyio.run(probe.list_tools)}
+        schemas = {t.name: t.inputSchema for t in anyio.run(probe.list_tools)}
 
         def prop(tool: str, name: str) -> dict:
             return schemas[tool]["properties"][name]
@@ -1209,13 +1209,13 @@ class TestToolRegistration:
         their key parameters in the JSON input_schema so agents can use them
         correctly on the first call.
         """
-        from mcp.server import MCPServer
+        from mcp.server.fastmcp import FastMCP
 
-        probe = MCPServer(name="probe")
+        probe = FastMCP(name="probe")
         register_all_tools(probe)
         import anyio
 
-        schemas = {t.name: t.input_schema for t in anyio.run(probe.list_tools)}
+        schemas = {t.name: t.inputSchema for t in anyio.run(probe.list_tools)}
 
         def props(tool: str) -> dict:
             return schemas[tool]["properties"]
@@ -1232,7 +1232,7 @@ class TestToolRegistration:
         # handover_claim advertises full as a boolean param
         assert "full" in props("handover_claim")
         full_prop = props("handover_claim")["full"]
-        # MCPServer maps bool to "boolean" type; check the type or anyOf branches.
+        # FastMCP maps bool to "boolean" type; check the type or anyOf branches.
         schema_types = {full_prop.get("type")} | {
             b.get("type") for b in full_prop.get("anyOf", [])
         }

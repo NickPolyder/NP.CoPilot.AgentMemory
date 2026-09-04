@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from mcp.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 from np_agent_memory.db import connect, ensure_data_dir, get_db_path, run_in_write_txn
 from np_agent_memory.identity import now_iso
@@ -221,8 +221,8 @@ def start_lazy_daily_backup() -> threading.Thread:
     return thread
 
 
-def register_backup_tools(mcp: MCPServer) -> None:
-    """Register the backup tool on the MCPServer instance."""
+def register_backup_tools(mcp: FastMCP) -> None:
+    """Register the backup tool on the FastMCP instance."""
 
     @mcp.tool()
     def memory_backup_now() -> dict[str, Any]:
